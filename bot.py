@@ -149,9 +149,12 @@ async def call_raw(msgs, model, falls, mt=MAX_TOK, to=TOUT):
                     d = r.json()
                     if "choices" in d and d["choices"]:
                         ct = d["choices"][0]["message"].get("content") or ""
-                        if isinstance(ct,list): ct="".join(p.get("text","") for p in ct if isinstance(p,dict))
-                        log.info(f"  OK: {m}")
-                        return ct
+                if isinstance(ct,list): ct="".join(p.get("text","") for p in ct if isinstance(p,dict))
+                if not ct.strip():
+                    log.warning(f"  {m}: пустой ответ, пробую следующую")
+                    continue
+                log.info(f"  OK: {m}")
+                return ct
                 log.warning(f"  {m}: {r.status_code}")
                 err = f"{m}:{r.status_code}"
             except httpx.TimeoutException: log.warning(f"  {m}: timeout"); err=f"{m}:timeout"
