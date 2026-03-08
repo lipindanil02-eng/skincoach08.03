@@ -17,8 +17,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 load_dotenv()
 
 # ── КОНФИГ ──
-TG_TOKEN = os.getenv("8653199428:AAGXN-9YaFESxzCrPN0L3Nz52bW-rAyR6wQ", "").strip()
-OR_KEY = os.getenv("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", "").strip()
+TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 VISION_M = os.getenv("VISION_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
 REASON_A = os.getenv("REASONER_A_MODEL", "arcee-ai/trinity-large-preview:free")
 REASON_B = os.getenv("REASONER_B_MODEL", "stepfun/step-3.5-flash:free")
