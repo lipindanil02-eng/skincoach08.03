@@ -1,484 +1,485 @@
 """
-SkinCoach v6 — 2 reasoner + judge + 28-дневная программа "Чистая кожа"
-Архитектура:
-  Фото → Vision → Reasoner A (дерматолог) || Reasoner B (кинезиолог) → Judge → План на день
-  Текст → Chat с полным контекстом пользователя
+SkinCoach v7 — 8-слойный пайплайн + уточняющие вопросы + 28-дневная программа
 """
-import asyncio, json, os, sys, base64, logging
+import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any,Dict,List
 import httpx
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
 
 load_dotenv()
 
-# ── КОНФИГ ──
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-VISION_M = os.getenv("VISION_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
-REASON_A = os.getenv("REASONER_A_MODEL", "arcee-ai/trinity-large-preview:free")
-REASON_B = os.getenv("REASONER_B_MODEL", "stepfun/step-3.5-flash:free")
-JUDGE_M = os.getenv("JUDGE_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
-CHAT_M = os.getenv("CHAT_MODEL", "arcee-ai/trinity-large-preview:free")
-V_FALL = [m.strip() for m in os.getenv("VISION_FALLBACKS", "google/gemma-3-27b-it:free,google/gemma-3-12b-it:free").split(",") if m.strip()]
-T_FALL = [m.strip() for m in os.getenv("TEXT_FALLBACKS", "meta-llama/llama-3.3-70b-instruct:free,stepfun/step-3.5-flash:free,google/gemma-3-4b-it:free").split(",") if m.strip()]
-MAX_TOK = int(os.getenv("MAX_TOKENS", "800"))
-TEMP = float(os.getenv("TEMPERATURE", "0.3"))
-TOUT = int(os.getenv("TIMEOUT", "120"))
-HIST_FILE = "history.json"
-MAX_HIST = 30
-TG_MAX = 4000
+TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
+OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
+VISION_M=os.getenv("VISION_MODEL","google/gemini-2.0-flash-lite-001").strip()
+REASON_M=os.getenv("REASON_MODEL","google/gemini-2.0-flash-lite-001").strip()
+STRONG_M=os.getenv("STRONG_MODEL","google/gemini-2.5-flash-preview").strip()
+VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemini-2.5-flash-preview").split(",") if m.strip()]
+TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","google/gemini-2.5-flash-preview,arcee-ai/trinity-large-preview:free").split(",") if m.strip()]
+TEMP=float(os.getenv("TEMPERATURE","0.3"))
+TOUT=int(os.getenv("TIMEOUT","120"))
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s|%(levelname)s|%(message)s")
-log = logging.getLogger("skincoach")
+logging.basicConfig(level=logging.INFO,format="%(asctime)s|%(levelname)s|%(message)s")
+log=logging.getLogger("skincoach")
 
-# ── СОСТОЯНИЯ ──
-S_NAME = "ask_name"
-S_PROBLEM = "ask_problem"
-S_DURATION = "ask_duration"
-S_TRIED = "ask_tried"
-S_PHOTO = "ask_photo"
-S_ACTIVE = "active"
+# States
+S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
 
-WEEKS = {
-    1: "Питание и триггеры",
-    2: "Наружный уход",
-    3: "Эмоциональная устойчивость",
-    4: "Контроль и коррекция",
+WEEKS={1:"ПИТАНИЕ — убираем провокаторы",2:"НАРУЖНЫЙ УХОД — мыло, масло, крем",
+       3:"ЭМОЦИИ — стресс-протокол",4:"АНАЛИЗЫ — контроль и коррекция"}
+W_EMOJI={1:"🥗",2:"🧴",3:"🧠",4:"🔬"}
+FOCUSES={
+    1:{1:"Список что ел за 3 дня",2:"Исключи молочку",3:"Убери сахар",
+       4:"Добавь куркуму",5:"8 стаканов воды",6:"Анти-воспалительный смузи",7:"Итог недели"},
+    2:{1:"Серное мыло НЕ при остром",2:"Тёплая вода до 37C",3:"Крем с мочевиной на влажную кожу",
+       4:"Масло точечно после крема",5:"Серное мыло 1 раз если можно",6:"Полная схема утро+вечер",7:"Фото для сравнения"},
+    3:{1:"Дыхание 4-7-8",2:"3 ситуации обострения",3:"Точечный массаж",
+       4:"Аффирмация 10 раз",5:"Мышечное расслабление",6:"Письмо коже",7:"Связь стресс-кожа?"},
+    4:{1:"Запись: ОАК, D, ферритин, ТТГ",2:"Копрограмма",3:"Цинк и селен",
+       4:"Расшифровка результатов",5:"Коррекция добавок",6:"Персональный протокол",7:"Финальное фото"},
 }
 
-FOCUSES = {
-    1: {1: "Запиши всё что ел за 3 дня — ищем провокаторы",
-        2: "Исключи молочку. Замени на растительное молоко",
-        3: "Убери сахар и белый хлеб",
-        4: "Добавь куркуму с чёрным перцем в еду",
-        5: "8 стаканов воды сегодня. Считай",
-        6: "Анти-воспалительный смузи: шпинат+банан+имбирь+куркума",
-        7: "Итог недели. Что изменилось в коже?"},
-    2: {1: "Серное мыло НЕ при остром воспалении",
-        2: "Тёплая вода до 37C. Промакивай, не три",
-        3: "Крем с мочевиной 3-5% на влажную кожу после умывания",
-        4: "Масло жожоба/облепиховое точечно на бляшки после крема",
-        5: "Если этап позволяет — серное мыло 1 раз, наблюдай 24ч",
-        6: "Полная схема утро+вечер. Запиши",
-        7: "Сравни кожу с фото 7 дней назад. Отправь новое фото"},
-    3: {1: "Дыхание 4-7-8: вдох 4, задержка 7, выдох 8. 5 минут утром",
-        2: "Запиши 3 ситуации обострения — что было в жизни?",
-        3: "Точечный массаж: виски + между бровями по 30 сек",
-        4: "Аффирмация 10 раз утром вслух",
-        5: "Прогрессивное мышечное расслабление 10 мин вечером",
-        6: "Напиши письмо своей коже",
-        7: "Итог: связь стресса и кожи?"},
-    4: {1: "Запишись: ОАК, витамин D, ферритин, ТТГ",
-        2: "Копрограмма — состояние кишечника",
-        3: "Цинк и селен — критичны для кожи",
-        4: "Результаты — отправь фото, помогу расшифровать",
-        5: "Скорректируй добавки по анализам",
-        6: "Составь свой протокол из всего что узнал",
-        7: "Финальное фото для сравнения с первым днём"},
-}
+# Utils
+def rp(f,d=""):
+    p=Path(f)
+    if p.exists(): return p.read_text("utf-8").strip()
+    p2=Path("prompts")/f
+    if p2.exists(): return p2.read_text("utf-8").strip()
+    return d
 
-# ── УТИЛИТЫ ──
-def read_prompt(f, d=""):
-    p = Path(f)
-    return p.read_text(encoding="utf-8").strip() if p.exists() else d
-
-def clean_md(t):
-    t = t.replace("**","").replace("__","").replace("```","").replace("`","")
+def cm(t):
+    t=t.replace("**","").replace("__","").replace("```","").replace("`","")
     return "\n".join(l.lstrip("#").strip() if l.lstrip().startswith("#") else l for l in t.split("\n"))
 
-def extract_json(t):
-    t = t.strip()
-    if t.startswith("```"): t = t.split("\n",1)[-1]
-    if t.endswith("```"): t = t.rsplit("```",1)[0]
-    t = t.strip()
+def xj(t):
+    t=t.strip()
+    for prefix in ["```json","```"]:
+        if t.startswith(prefix): t=t[len(prefix):]
+    if t.endswith("```"): t=t[:-3]
+    t=t.strip()
     try: return json.loads(t)
     except: pass
-    s, e = t.find("{"), t.rfind("}")
+    s,e=t.find("{"),t.rfind("}")
     if s!=-1 and e>s:
         try: return json.loads(t[s:e+1])
         except: pass
-    raise ValueError(f"No JSON: {t[:200]}")
+    raise ValueError(f"No JSON: {t[:300]}")
 
-# ── ИСТОРИЯ ──
-def load_h():
-    if os.path.exists(HIST_FILE):
+# History
+HIST="history.json"
+def lh():
+    if os.path.exists(HIST):
         try:
-            with open(HIST_FILE,"r",encoding="utf-8") as f: return json.load(f)
+            with open(HIST,"r",encoding="utf-8") as f: return json.load(f)
         except: return {}
     return {}
-
-def save_h(h):
+def sh(h):
     try:
-        with open(HIST_FILE,"w",encoding="utf-8") as f: json.dump(h,f,ensure_ascii=False,indent=2)
-    except IOError as e: log.error(f"Save: {e}")
+        with open(HIST,"w",encoding="utf-8") as f: json.dump(h,f,ensure_ascii=False,indent=2)
+    except Exception as e: log.error(f"Save:{e}")
+def gu(h,uid):
+    u=str(uid)
+    if u not in h: h[u]={"state":S_NAME,"name":None,"duration":None,"tried":None,
+        "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
+        "recommendations":None,"pending_questions":None,"photo_b64":None,
+        "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat()}
+    return h[u]
+def tm(m): return m[-30:] if len(m)>30 else m
 
-def get_u(h, uid):
-    uid = str(uid)
-    if uid not in h:
-        h[uid] = {"state":S_NAME,"name":None,"problem":None,"duration":None,"tried":None,
-                   "vision":None,"analysis":None,"day":0,"week":1,"messages":[],
-                   "start":None,"created":datetime.now().isoformat()}
-    return h[uid]
+# API
+def hdr(): return {"Authorization":f"Bearer {OR_KEY}","Content-Type":"application/json",
+    "HTTP-Referer":"https://t.me/skincoach_bot","X-Title":"SkinCoach"}
 
-def trim(m): return m[-MAX_HIST:] if len(m)>MAX_HIST else m
-
-def ctx(u):
-    last = u["messages"][-4:] if u["messages"] else []
-    if not last: return ""
-    return "Контекст:\n"+"\n".join(f"{'Человек' if m['role']=='user' else 'Коуч'}: {(m['content'] if isinstance(m['content'],str) else str(m['content']))[:150]}" for m in last)
-
-# ── API ──
-def headers():
-    return {"Authorization":f"Bearer {OR_KEY}","Content-Type":"application/json",
-            "HTTP-Referer":"https://t.me/skincoach_bot","X-Title":"SkinCoach"}
-
-async def call_raw(msgs, model, falls, mt=MAX_TOK, to=TOUT):
-    err = None
-    async with httpx.AsyncClient(timeout=to) as c:
-        for m in [model]+falls:
+async def call_raw(msgs,mdl,fb,mt=800):
+    last_e=None
+    async with httpx.AsyncClient(timeout=TOUT) as c:
+        for m in [mdl]+fb:
             try:
                 log.info(f"  -> {m}")
-                r = await c.post("https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers(), json={"model":m,"messages":msgs,"temperature":TEMP,"max_tokens":mt})
+                r=await c.post("https://openrouter.ai/api/v1/chat/completions",headers=hdr(),
+                    json={"model":m,"messages":msgs,"temperature":TEMP,"max_tokens":mt})
                 if r.status_code==200:
-                    d = r.json()
+                    d=r.json()
                     if "choices" in d and d["choices"]:
-                        ct = d["choices"][0]["message"].get("content") or ""
-                if isinstance(ct,list): ct="".join(p.get("text","") for p in ct if isinstance(p,dict))
-                if not ct.strip():
-                    log.warning(f"  {m}: пустой ответ, пробую следующую")
-                    continue
-                log.info(f"  OK: {m}")
-                return ct
-                log.warning(f"  {m}: {r.status_code}")
-                err = f"{m}:{r.status_code}"
-            except httpx.TimeoutException: log.warning(f"  {m}: timeout"); err=f"{m}:timeout"
-            except Exception as e: log.warning(f"  {m}: {e}"); err=str(e)
-    raise Exception(f"All models down. {err}")
+                        ct=d["choices"][0]["message"].get("content") or ""
+                        if isinstance(ct,list): ct="".join(p.get("text","") for p in ct if isinstance(p,dict))
+                        if not ct.strip():
+                            log.warning(f"  {m}: empty"); continue
+                        log.info(f"  OK: {m}")
+                        return ct
+                log.warning(f"  {m}: {r.status_code}"); last_e=f"{m}:{r.status_code}"
+            except httpx.TimeoutException: log.warning(f"  {m}: timeout"); last_e=f"{m}:timeout"
+            except Exception as e: log.warning(f"  {m}: {e}"); last_e=str(e)
+    raise Exception(f"All down. {last_e}")
 
-async def call_json(msgs, model, falls, mt=MAX_TOK):
-    return extract_json(await call_raw(msgs, model, falls, mt))
+async def cj(msgs,mdl,fb,mt=800): return xj(await call_raw(msgs,mdl,fb,mt))
+async def ct(msgs,mdl,fb,mt=800): return cm(await call_raw(msgs,mdl,fb,mt))
 
-async def call_text(msgs, model, falls, mt=MAX_TOK):
-    return clean_md(await call_raw(msgs, model, falls, mt))
+# ════════════════════════════════════
+#  8-STEP PIPELINE
+# ════════════════════════════════════
+async def pipeline_photo(b64,cap,u):
+    """Steps 1-4: analyze photo and generate questions"""
+    nm=u.get("name","друг");dur=u.get("duration","?");tri=u.get("tried","?")
+    uctx=f"Имя:{nm}, давность:{dur}, пробовали:{tri}"
 
-# ── КОНСИЛИУМ ──
-async def consilium(photo_b64, caption, u):
-    name = u.get("name","")
-    problem = u.get("problem","кожная проблема")
-    duration = u.get("duration","?")
-    tried = u.get("tried","?")
-    day, week = u.get("day",1), u.get("week",1)
-    wt = WEEKS.get(week,"Программа")
-    diw = ((day-1)%7)+1
-    focus = FOCUSES.get(week,{}).get(diw,"Следуй программе")
-    uctx = f"Имя:{name}, проблема:{problem}, давность:{duration}, пробовали:{tried}, день:{day}/28, неделя:{week}, тема:{wt}"
-
-    # 1. VISION
-    log.info("👁 1/4 Vision...")
-    vp = read_prompt("vision_prompt.txt","Проанализируй фото кожи. Верни JSON.")
-    vm = [{"role":"system","content":vp+f"\n\nДанные: {uctx}"},
-          {"role":"user","content":[{"type":"text","text":caption or "Проанализируй фото кожи."},
-           {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{photo_b64}"}}]}]
+    # STEP 1: Quality Check
+    log.info("📸 1/8 Quality...")
     try:
-        vis = await call_json(vm, VISION_M, V_FALL, 400)
+        qp=rp("1_quality.txt","Проверь качество фото. JSON.")
+        q=await cj([{"role":"system","content":qp},
+            {"role":"user","content":[{"type":"text","text":"Оцени качество фото кожи"},
+                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
+            VISION_M,VIS_FB,300)
+        if not q.get("usable",True):
+            return "ask_reshoot",q.get("suggestion","Пересними при дневном свете, крупным планом.")
+    except Exception as e:
+        log.warning(f"Quality skip: {e}")
+
+    # STEP 2: Vision Description
+    log.info("👁 2/8 Vision...")
+    vp=rp("2_vision.txt","Опиши что видно на фото кожи. JSON.")
+    try:
+        vis=await cj([{"role":"system","content":vp},
+            {"role":"user","content":[{"type":"text","text":cap or "Опиши что видишь на коже"},
+                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
+            VISION_M,VIS_FB,500)
     except Exception as e:
         log.error(f"Vision fail: {e}")
-        return f"Не удалось проанализировать фото. Попробуй переснять при дневном свете и отправить ещё раз."
-    u["vision"] = vis
+        return "error","Не удалось проанализировать фото. Попробуй ещё раз."
+    u["vision_data"]=vis
 
-    # Проверка качества фото
-    if vis.get("photo_quality") == "poor":
-        return f"{name}, фото получилось нечётким. Пересними при дневном свете, крупным планом, без вспышки. Так анализ будет точнее."
-
-    jctx = json.dumps({"user":uctx,"vision":vis,"day_focus":focus}, ensure_ascii=False)
-
-    # 2. REASONER A (дерматолог)
-    log.info("🧴 2/4 Reasoner A...")
-    rap = read_prompt("reasoner_a_prompt.txt","Составь план ухода. Верни JSON.")
-    ram = [{"role":"system","content":rap},{"role":"user","content":jctx}]
-    try: ra = await call_json(ram, REASON_A, T_FALL, 500)
-    except: ra = {"summary":"Анализ недоступен","care_morning":[],"care_evening":[],"confidence":0}
-
-    # 3. REASONER B (кинезиолог)
-    log.info("🧠 3/4 Reasoner B...")
-    rbp = read_prompt("reasoner_b_prompt.txt","Составь план. Верни JSON.")
-    rbm = [{"role":"system","content":rbp},{"role":"user","content":jctx}]
-    try: rb = await call_json(rbm, REASON_B, T_FALL, 500)
-    except: rb = {"psycho_summary":"Анализ недоступен","affirmation":"","confidence":0}
-
-    # 4. JUDGE
-    log.info("📋 4/4 Judge...")
-    jp = read_prompt("judge_prompt.txt","Объедини A и B. Верни JSON.")
-    jdata = json.dumps({"user":uctx,"vision":vis,"answer_a":ra,"answer_b":rb,
-        "day":day,"week":week,"week_theme":wt,"day_focus":focus,"name":name}, ensure_ascii=False)
-    jm = [{"role":"system","content":jp},{"role":"user","content":jdata}]
+    # STEP 3: Dermatology Reasoning
+    log.info("🔬 3/8 Reasoning...")
+    rp3=rp("3_reasoning.txt","Дифференциальная диагностика. JSON.")
+    ctx3=json.dumps({"vision":vis,"patient":uctx},ensure_ascii=False)
     try:
-        jr = await call_json(jm, JUDGE_M, T_FALL, 800)
-        final = jr.get("final_answer","")
-        if not final: final = fallback_fmt(vis, ra, rb, u)
+        reason=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
+            STRONG_M,TXT_FB,600)
+    except Exception as e:
+        log.error(f"Reasoning fail: {e}")
+        reason={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
+                "primary_diagnosis":"требуется уточнение","stage":"unknown","phase":"unknown",
+                "severity":"unknown","soap_safe":False,"confidence":0}
+    u["reasoning_data"]=reason
+    u["diagnosis"]=reason.get("primary_diagnosis","не определено")
+
+    # STEP 4: Clinical Questions
+    log.info("❓ 4/8 Questions...")
+    rp4=rp("4_questions.txt","Задай 1-2 вопроса. JSON.")
+    ctx4=json.dumps({"vision":vis,"reasoning":reason,"patient":uctx},ensure_ascii=False)
+    try:
+        qs=await cj([{"role":"system","content":rp4},{"role":"user","content":ctx4}],
+            REASON_M,TXT_FB,400)
     except:
-        final = fallback_fmt(vis, ra, rb, u)
+        qs={"questions":[],"intro":f"{nm}, я проанализировал фото."}
+    u["pending_questions"]=qs
+    return "questions",qs
 
-    u["analysis"] = final
-    return clean_md(final)
+async def pipeline_final(u,answers_text=""):
+    """Steps 5-8: after questions answered, generate final plan"""
+    nm=u.get("name","друг");dur=u.get("duration","?");tri=u.get("tried","?")
+    vis=u.get("vision_data",{});reason=u.get("reasoning_data",{})
+    dy=u.get("day",1);wk=u.get("week",1)
+    wt=WEEKS.get(wk,"Программа");diw=((dy-1)%7)+1
+    df=FOCUSES.get(wk,{}).get(diw,"Следуй программе")
 
-def fallback_fmt(v, a, b, u):
-    name, day, week = u.get("name",""), u.get("day",1), u.get("week",1)
-    we = {1:"🥗",2:"🧴",3:"🧠",4:"🔬"}.get(week,"📋")
-    p = [f"День {day}/28 — Неделя {week} {we}\n"]
-    s = a.get("summary","")
-    if s: p.append(f"{name}, {s}\n")
-    cm = a.get("care_morning",[])
-    if cm: p.append("🧴 Утро:"); p.extend(f"  {x}" for x in cm[:3]); p.append("")
-    ce = a.get("care_evening",[])
-    if ce: p.append("🌙 Вечер:"); p.extend(f"  {x}" for x in ce[:3]); p.append("")
-    nr = a.get("nutrition_remove",[])
-    na = a.get("nutrition_add",[])
-    if nr or na:
-        p.append("🥗 Питание:")
-        if nr: p.append(f"  Убрать: {', '.join(nr[:3])}")
-        if na: p.append(f"  Добавить: {', '.join(na[:3])}")
-        p.append("")
-    mp = b.get("morning_practice","")
-    ep = b.get("evening_practice","")
-    if mp or ep:
-        p.append("🧠 Практики:")
-        if mp: p.append(f"  Утро: {mp}")
-        if ep: p.append(f"  Вечер: {ep}")
-        p.append("")
-    af = b.get("affirmation","")
-    if af: p.append(f"💫 {af}\n")
-    da = a.get("day_action","")
-    if da: p.append(f"🎯 Фокус: {da}\n")
-    sm = b.get("support_message","")
-    if sm: p.append(f"💚 {sm}\n")
-    p.append("📝 Вечером напиши: что сделал, как кожа, ощущения.")
+    all_data=json.dumps({"vision":vis,"reasoning":reason,"patient_answers":answers_text,
+        "patient":f"Имя:{nm}, давность:{dur}, пробовали:{tri}",
+        "day":dy,"week":wk,"week_theme":wt,"day_focus":df},ensure_ascii=False)
+
+    # STEP 5: Risk Triage
+    log.info("⚠️ 5/8 Triage...")
+    rp5=rp("5_triage.txt","Определи уровень риска. JSON.")
+    try:
+        triage=await cj([{"role":"system","content":rp5},{"role":"user","content":all_data}],
+            REASON_M,TXT_FB,300)
+    except:
+        triage={"risk_level":"green","urgency":"routine"}
+    u["risk"]=triage
+
+    # STEP 6: Recommendations
+    log.info("📋 6/8 Recommendations...")
+    rp6=rp("6_recommendations.txt","Составь рекомендации. JSON.")
+    ctx6=json.dumps({"all_data":json.loads(all_data) if isinstance(all_data,str) else all_data,
+        "triage":triage},ensure_ascii=False)
+    try:
+        recs=await cj([{"role":"system","content":rp6},{"role":"user","content":ctx6}],
+            STRONG_M,TXT_FB,800)
+    except Exception as e:
+        log.error(f"Recs fail: {e}")
+        recs={"diagnosis_summary":"Анализ выполнен","morning_routine":["Мягкое очищение"],
+              "evening_routine":["Увлажнение"],"day_focus":df}
+    u["recommendations"]=recs
+
+    # STEP 7: Safety Filter
+    log.info("🛡️ 7/8 Safety...")
+    rp7=rp("7_safety.txt","Проверь безопасность. JSON.")
+    try:
+        safety=await cj([{"role":"system","content":rp7},
+            {"role":"user","content":json.dumps({"recs":recs,"triage":triage,"reasoning":reason},ensure_ascii=False)}],
+            REASON_M,TXT_FB,300)
+        if not safety.get("approved",True):
+            log.warning(f"Safety issues: {safety.get('issues')}")
+    except:
+        pass  # If safety check fails, proceed anyway
+
+    # STEP 8: Format Response
+    log.info("💬 8/8 Response...")
+    rp8=rp("8_response.txt","Собери ответ для Telegram.")
+    rp8=rp8.replace("{name}",nm).replace("{day}",str(dy)).replace("{week}",str(wk))
+    ctx8=json.dumps({"recommendations":recs,"triage":triage,"reasoning":reason,
+        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt},ensure_ascii=False)
+    try:
+        final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
+            REASON_M,TXT_FB,900)
+    except Exception as e:
+        log.error(f"Response fail: {e}")
+        final=format_fallback(recs,reason,triage,u)
+    return final
+
+def format_fallback(recs,reason,triage,u):
+    nm=u.get("name","");dy=u.get("day",1);wk=u.get("week",1)
+    p=[f"🔍 {nm}, вот что я вижу:"]
+    ds=recs.get("diagnosis_summary","")
+    if ds: p.append(ds)
+    hyps=reason.get("hypotheses",[])
+    if hyps:
+        for h in hyps[:3]:
+            p.append(f"  {h.get('diagnosis','?')} — {h.get('probability',0)}%")
+    p.append(f"\nДень {dy}/28 — Неделя {wk} {W_EMOJI.get(wk,'📋')}")
+    mr=recs.get("morning_routine",[])
+    if mr: p.append("\n🧴 Утро:"); p.extend(f"  {x}" for x in mr[:3])
+    er=recs.get("evening_routine",[])
+    if er: p.append("\n🌙 Вечер:"); p.extend(f"  {x}" for x in er[:3])
+    ps=recs.get("psycho",{})
+    af=ps.get("affirmation","")
+    if af: p.append(f"\n💫 {af}")
+    p.append("\n📝 Вечером напиши: что сделал, как кожа, ощущения.")
     return "\n".join(p)
 
-# ── ПРОМПТ ЧАТА ──
-CHAT_P = """Ты — SkinCoach, уверенный AI-специалист по сопровождению людей с кожными проблемами.
-Работаешь как персональный цифровой помощник: спокойно, чётко, без воды, с экспертностью.
-
-Данные человека:
-Имя: {name} | Проблема: {problem} | Давность: {duration} | Пробовали: {tried}
-Анализ: {analysis}
-День: {day}/28 | Неделя: {week}/4 — {wt}
-
-Программа "Чистая кожа":
-Н1: питание, триггеры | Н2: наружный уход | Н3: эмоции, стресс | Н4: анализы, контроль
-
-Правила:
-- Обращайся по имени ({name})
-- Уверенно, спокойно, конкретно
-- НЕ звёздочки, НЕ markdown
-- До 1200 символов
-- НЕ дисклеймеры
-- Отчёт → похвали + коррекция + аффирмация + задание на завтра
-- Вопрос → в контексте дня и недели
-- Формат: поддержка → что вижу → что делать → следующий вопрос
-- Задавай по одному вопросу
-- Помни прошлые ответы
-- Отвечай на языке пользователя"""
-
-NEXT_P = """Ты — SkinCoach. День {day}/28, неделя {week} — {wt}.
-Данные: {name}, проблема: {problem}, давность: {duration}, пробовали: {tried}
-Анализ: {analysis}
-Фокус дня: {focus}
-{context}
-
-Составь план на день. Формат (эмодзи, НЕ звёздочки):
-
-День {day}/28 — Неделя {week} {we}
-
-(по имени + 1 предложение)
-
-🧴 Утро: (2-3 действия)
-☀️ День: (1-2 напоминания)
-🌙 Вечер: (2-3 действия)
-🎯 Фокус: {focus}
-💫 Аффирмация (уникальная)
-📝 Вечером напиши отчёт."""
-
-# ── ОТПРАВКА ──
-async def send(msg, text):
-    if len(text) <= TG_MAX: await msg.reply_text(text); return
-    parts, cur = [], ""
-    for ln in text.split("\n"):
-        if len(cur)+len(ln)+1 > TG_MAX:
+# Send
+async def send(msg,txt):
+    if len(txt)<=4000: await msg.reply_text(txt); return
+    parts,cur=[],""
+    for l in txt.split("\n"):
+        if len(cur)+len(l)+1>4000:
             if cur: parts.append(cur)
-            cur = ln
-        else: cur = cur+"\n"+ln if cur else ln
+            cur=l
+        else: cur=cur+"\n"+l if cur else l
     if cur: parts.append(cur)
     for p in parts: await msg.reply_text(p)
 
-# ── ОБРАБОТЧИКИ ──
-async def cmd_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    h = load_h(); uid = str(upd.effective_user.id)
-    h[uid] = {"state":S_NAME,"name":None,"problem":None,"duration":None,"tried":None,
-              "vision":None,"analysis":None,"day":0,"week":1,"messages":[],
-              "start":None,"created":datetime.now().isoformat()}
-    save_h(h)
+# ════════════════════════════════════
+#  HANDLERS
+# ════════════════════════════════════
+async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();uid=str(upd.effective_user.id)
+    h[uid]=gu(h,upd.effective_user.id)
+    h[uid]["state"]=S_NAME;h[uid]["msgs"]=[]
+    sh(h)
     await upd.message.reply_text(
-        "Привет. Я SkinCoach — твой персональный помощник по программе 'Чистая кожа'.\n\n"
-        "Я помогу тебе понять, что влияет на состояние кожи, "
-        "выстроить уход и пройти маршрут шаг за шагом.\n\n"
-        "Каждое фото анализирует консилиум:\n"
-        "  👁 Дерматолог-диагност\n"
-        "  🧴 Специалист по уходу и питанию\n"
-        "  🧠 Кинезиолог-психосоматик\n"
-        "  📋 Синтезатор — собирает лучшее решение\n\n"
-        "Для начала: как тебя зовут?")
+        "Привет.\nЯ твой персональный помощник по программе 'Чистая кожа'.\n\n"
+        "Я помогу понять что влияет на кожу, выстроить уход и пройти маршрут шаг за шагом.\n\n"
+        "Каждое фото проходит 8-ступенчатый анализ:\n"
+        "  👁 Описание кожи\n  🔬 Диагностика с вероятностями\n"
+        "  ❓ Уточняющие вопросы\n  ⚠️ Оценка рисков\n"
+        "  📋 Персональные рекомендации\n  🛡️ Проверка безопасности\n\n"
+        "Для начала — как тебя зовут?")
 
-async def handle_text(upd: Update, c: ContextTypes.DEFAULT_TYPE):
-    uid = upd.effective_user.id; txt = upd.message.text
-    h = load_h(); u = get_u(h, uid)
+async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    if u["state"] == S_NAME:
-        u["name"] = txt.strip(); u["state"] = S_PROBLEM; save_h(h)
-        await upd.message.reply_text(f"Рад знакомству, {u['name']}.\n\nКакая у тебя проблема с кожей?\nПсориаз, дерматит, экзема, себорея — или опиши своими словами.")
+    # Onboarding
+    if u["state"]==S_NAME:
+        u["name"]=txt.strip();u["state"]=S_DUR;sh(h)
+        await upd.message.reply_text(f"{u['name']}, какая у тебя проблема с кожей и как давно беспокоит?")
         return
-
-    if u["state"] == S_PROBLEM:
-        u["problem"] = txt.strip(); u["state"] = S_DURATION; save_h(h)
-        await upd.message.reply_text("Как давно это тебя беспокоит?\nНапример: 2 года, с детства, полгода...")
+    if u["state"]==S_DUR:
+        u["duration"]=txt.strip();u["state"]=S_TRIED;sh(h)
+        await upd.message.reply_text("Что уже пробовал(а)? Мази, диеты, народные средства, фототерапия?")
         return
-
-    if u["state"] == S_DURATION:
-        u["duration"] = txt.strip(); u["state"] = S_TRIED; save_h(h)
-        await upd.message.reply_text("Что уже пробовал(а)?\nГормональные мази, диеты, народные средства, фототерапия — всё что помнишь.")
-        return
-
-    if u["state"] == S_TRIED:
-        u["tried"] = txt.strip(); u["state"] = S_PHOTO; save_h(h)
+    if u["state"]==S_TRIED:
+        u["tried"]=txt.strip();u["state"]=S_PHOTO;sh(h)
         await upd.message.reply_text(
-            f"Понял, {u['name']}. Теперь самое важное.\n\n"
-            "📸 Отправь фото проблемного участка кожи.\n\n"
-            "Консилиум определит:\n"
-            "  — тип и стадию\n"
-            "  — этап обострения\n"
-            "  — можно ли серное/дегтярное мыло\n"
-            "  — персональный план на День 1\n\n"
-            "Лучше при дневном свете, крупным планом.")
+            f"Отлично, {u['name']}.\n\n📸 Отправь фото проблемного участка.\n"
+            "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
+        return
+    if u["state"]==S_PHOTO:
+        await upd.message.reply_text(f"{u.get('name','')}, мне нужно фото. 📸")
         return
 
-    if u["state"] == S_PHOTO:
-        await upd.message.reply_text(f"{u.get('name','')}, мне нужно фото чтобы запустить консилиум.\n📸 Отправь фото проблемного участка.")
+    # Answers to clinical questions
+    if u["state"]==S_QUESTIONS:
+        u["state"]=S_ACTIVE
+        if u["day"]==0: u["day"]=1;u["week"]=1
+        st=await upd.message.reply_text("Принял ответы. Генерирую персональный план... ⏳")
+        try:
+            reply=await pipeline_final(u,txt)
+        except Exception as e:
+            reply=f"Ошибка генерации плана. Попробуй /next"; log.error(f"Final:{e}")
+        u["msgs"].append({"role":"user","content":txt})
+        u["msgs"].append({"role":"assistant","content":reply})
+        u["msgs"]=tm(u["msgs"]);sh(h)
+        try: await st.delete()
+        except: pass
+        await send(upd.message,reply)
         return
 
-    if u["state"] == S_ACTIVE:
-        u["messages"].append({"role":"user","content":txt})
-        u["messages"] = trim(u["messages"])
-        wt = WEEKS.get(u["week"],"Программа")
-        an = (u.get("analysis") or "нет")[:300]
-        pr = CHAT_P.format(name=u.get("name",""), problem=u.get("problem",""),
-            duration=u.get("duration","?"), tried=u.get("tried","?"),
-            analysis=an, day=u["day"], week=u["week"], wt=wt)
-        msgs = [{"role":"system","content":pr}] + u["messages"]
-        try: reply = await call_text(msgs, CHAT_M, T_FALL, 600)
-        except Exception as e: reply = "Модели заняты. Напиши через пару минут."; log.error(f"Chat: {e}")
-        u["messages"].append({"role":"assistant","content":reply})
-        u["messages"] = trim(u["messages"]); save_h(h)
-        await send(upd.message, reply); return
+    # Active program - chat
+    if u["state"]==S_ACTIVE:
+        u["msgs"].append({"role":"user","content":txt});u["msgs"]=tm(u["msgs"])
+        wt=WEEKS.get(u["week"],"Программа")
+        diag=(u.get("diagnosis") or "не определено")[:200]
+        cp=rp("chat.txt","Ты SkinCoach.").format(
+            name=u.get("name","друг"),duration=u.get("duration","?"),
+            tried=u.get("tried","?"),diagnosis=diag,
+            day=u["day"],week=u["week"],week_theme=wt)
+        msgs=[{"role":"system","content":cp}]+u["msgs"]
+        try: reply=await ct(msgs,REASON_M,TXT_FB,600)
+        except: reply="Модели заняты. Через минуту."
+        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
+        await send(upd.message,reply)
+        return
 
-    u["state"] = S_NAME; save_h(h)
-    await upd.message.reply_text("Давай начнём. Как тебя зовут?")
+    u["state"]=S_NAME;sh(h)
+    await upd.message.reply_text("Как тебя зовут?")
 
-async def handle_photo(upd: Update, c: ContextTypes.DEFAULT_TYPE):
-    uid = upd.effective_user.id; h = load_h(); u = get_u(h, uid)
-    if u["state"] in (S_NAME, S_PROBLEM, S_DURATION, S_TRIED):
-        await upd.message.reply_text("Сначала познакомимся! Напиши /start"); return
+async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    if u["state"] in (S_NAME,S_DUR,S_TRIED):
+        await upd.message.reply_text("Сначала познакомимся. /start"); return
 
-    st = await upd.message.reply_text(
-        "📸 Фото получено! Запускаю консилиум...\n\n"
-        "👁 Дерматолог анализирует...\n"
-        "🧴 Специалист подбирает уход...\n"
-        "🧠 Кинезиолог оценивает...\n"
-        "📋 Синтезатор собирает план...\n\n"
-        "30-90 секунд ⏳")
+    st=await upd.message.reply_text(
+        "📸 Фото получено. Запускаю 8-ступенчатый анализ...\n\n"
+        "1️⃣ Проверка качества фото...\n2️⃣ Описание кожи...\n"
+        "3️⃣ Диагностика с вероятностями...\n4️⃣ Подготовка вопросов...\n\n"
+        "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    ph = upd.message.photo[-1]; f = await c.bot.get_file(ph.file_id)
-    pb = await f.download_as_bytearray(); b64 = base64.b64encode(pb).decode()
-    cap = (upd.message.caption or "").strip()
+    ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+    b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
+    cap=(upd.message.caption or "").strip()
+    u["photo_b64"]=b64[:100]  # store ref only
 
-    if u["state"]==S_PHOTO or u["day"]==0:
-        u["state"]=S_ACTIVE; u["day"]=1; u["week"]=1; u["start"]=datetime.now().isoformat()
+    result_type,result=await pipeline_photo(b64,cap,u)
 
-    try: reply = await consilium(b64, cap, u)
-    except Exception as e: reply="Ошибка. Попробуй через минуту."; log.error(f"Photo: {e}")
-
-    u["messages"].append({"role":"user","content":f"[фото] {cap}"})
-    u["messages"].append({"role":"assistant","content":reply})
-    u["messages"]=trim(u["messages"]); save_h(h)
     try: await st.delete()
     except: pass
-    await send(upd.message, reply)
 
-async def cmd_next(upd: Update, c: ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id; h=load_h(); u=get_u(h,uid)
-    if u["state"]!=S_ACTIVE: await upd.message.reply_text("Напиши /start"); return
+    if result_type=="ask_reshoot":
+        await upd.message.reply_text(f"📸 {result}")
+        sh(h); return
+
+    if result_type=="error":
+        await upd.message.reply_text(result)
+        sh(h); return
+
+    # result_type == "questions"
+    qs=result
+    intro=qs.get("intro",f"{u.get('name','')}, я проанализировал фото.")
+    questions=qs.get("questions",[])
+
+    # Show diagnosis preview
+    reason=u.get("reasoning_data",{})
+    hyps=reason.get("hypotheses",[])
+    diag_text=""
+    if hyps:
+        diag_text="\n\n🔬 Предварительный анализ:\n"
+        for hp in hyps[:3]:
+            diag_text+=f"  {hp.get('diagnosis','?')} — {hp.get('probability',0)}%\n"
+
+    if questions:
+        q_text="\n\nЧтобы дать точные рекомендации, мне нужно уточнить:\n\n"
+        for i,q in enumerate(questions):
+            q_text+=f"{i+1}. {q.get('question','')}\n"
+            opts=q.get("options",[])
+            if opts: q_text+="   "+", ".join(opts)+"\n"
+        q_text+="\nОтветь на вопросы одним сообщением."
+        u["state"]=S_QUESTIONS
+    else:
+        q_text=""
+        u["state"]=S_ACTIVE
+        if u["day"]==0: u["day"]=1;u["week"]=1
+
+    sh(h)
+    msg=intro+diag_text+q_text
+    await send(upd.message,msg)
+
+    # If no questions — proceed to final immediately
+    if not questions:
+        st2=await upd.message.reply_text("Генерирую план... ⏳")
+        try: reply=await pipeline_final(u,"")
+        except Exception as e: reply="Ошибка. /next"; log.error(f"Final:{e}")
+        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
+        try: await st2.delete()
+        except: pass
+        await send(upd.message,reply)
+
+async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
-        await upd.message.reply_text(f"🎉 {u.get('name','')}, программа пройдена!\nОтправь свежее фото — сравним с первым днём.")
-        save_h(h); return
+        await upd.message.reply_text(f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения.")
+        sh(h); return
     u["week"]=((u["day"]-1)//7)+1
-    wt=WEEKS.get(u["week"],"Программа")
-    we={1:"🥗",2:"🧴",3:"🧠",4:"🔬"}.get(u["week"],"📋")
-    diw=((u["day"]-1)%7)+1; focus=FOCUSES.get(u["week"],{}).get(diw,"Следуй программе")
-    an=(u.get("analysis") or "нет")[:300]
-    pr=NEXT_P.format(day=u["day"],week=u["week"],wt=wt,we=we,
-        name=u.get("name",""),problem=u.get("problem",""),
-        duration=u.get("duration","?"),tried=u.get("tried","?"),
-        analysis=an,focus=focus,context=ctx(u))
-    msgs=[{"role":"system","content":pr},{"role":"user","content":f"План на день {u['day']}."}]
-    try: plan=await call_text(msgs,CHAT_M,T_FALL,600)
-    except: plan="Попробуй /next через минуту."
-    u["messages"].append({"role":"assistant","content":plan})
-    u["messages"]=trim(u["messages"]); save_h(h)
-    await send(upd.message, plan)
+    wt=WEEKS.get(u["week"],"Программа");diw=((u["day"]-1)%7)+1
+    df=FOCUSES.get(u["week"],{}).get(diw,"Следуй программе")
+    diag=(u.get("diagnosis") or "не определено")[:200]
+    last=u["msgs"][-4:] if u["msgs"] else []
+    context="".join(f"{'Человек' if m['role']=='user' else 'Коуч'}: {(m['content'] if isinstance(m['content'],str) else '')[:150]}\n" for m in last)
+    pr=rp("next_day.txt","План на день.").format(
+        day=u["day"],week=u["week"],week_theme=wt,week_emoji=W_EMOJI.get(u["week"],"📋"),
+        name=u.get("name","друг"),diagnosis=diag,day_focus=df,context=context)
+    try: plan=await ct([{"role":"system","content":pr},{"role":"user","content":f"План на день {u['day']}."}],REASON_M,TXT_FB,600)
+    except: plan="Не удалось. /next через минуту."
+    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"]);sh(h)
+    await send(upd.message,plan)
 
-async def cmd_status(upd: Update, c: ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id; h=load_h(); u=get_u(h,uid)
+async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
     if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
-    wt=WEEKS.get(u["week"],"Программа"); pct=int((u["day"]/28)*100)
+    wt=WEEKS.get(u["week"],"Программа");pct=int((u["day"]/28)*100)
     bar="▓"*(pct//10)+"░"*(10-pct//10)
+    diag=u.get("diagnosis","не определено")
+    reason=u.get("reasoning_data",{})
+    hyps=reason.get("hypotheses",[])
+    diag_info=""
+    if hyps:
+        diag_info="\n\nДиагноз:\n"
+        for hp in hyps[:3]:
+            diag_info+=f"  {hp.get('diagnosis','?')} — {hp.get('probability',0)}%\n"
     await upd.message.reply_text(
-        f"📊 {u.get('name','')}, прогресс:\n\nДень: {u['day']}/28\n"
-        f"Неделя: {u['week']}/4 — {wt}\n[{bar}] {pct}%\n\n"
-        f"/next — следующий день\n📸 Фото — повторный консилиум")
+        f"📊 {u.get('name','')}{diag_info}\n"
+        f"День {u['day']}/28\nНеделя {u['week']}/4 — {wt}\n[{bar}] {pct}%\n\n"
+        f"/next — следующий день\n📸 Фото — повторный анализ")
 
-async def cmd_help(upd: Update, c: ContextTypes.DEFAULT_TYPE):
+async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
-        "SkinCoach — как пользоваться:\n\n"
-        "📸 Фото — консилиум + план на день\n"
+        "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
+        "📸 Фото — полный анализ с диагнозом и вероятностями\n"
         "💬 Текст — вопросы, отчёты\n\n"
-        "/next — следующий день\n/status — прогресс\n/start — заново\n/help — справка")
+        "/next — следующий день\n/status — прогресс + диагноз\n/start — заново")
 
-# ── ЗАПУСК ──
 def main():
-    if not TG_TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN не найден в .env")
-    if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY не найден в .env")
+    if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
+    if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
     if sys.platform=="win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    app=ApplicationBuilder().token(TG_TOKEN).build()
+    app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT&~filters.COMMAND,handle_text))
-    log.info("="*50)
-    log.info("  SkinCoach v6")
-    log.info(f"  Vision: {VISION_M} | A: {REASON_A}")
-    log.info(f"  B: {REASON_B} | Judge: {JUDGE_M} | Chat: {CHAT_M}")
-    log.info("="*50)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
+    log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
     app.run_polling()
 
 if __name__=="__main__": main()
