@@ -1,6 +1,8 @@
 """
 SkinCoach v7 — 8-слойный пайплайн + уточняющие вопросы + 28-дневная программа
 """
+import tempfile, os
+from inference import predict_image
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
@@ -362,12 +364,26 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-    b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-    cap=(upd.message.caption or "").strip()
-    u["photo_b64"]=b64[:100]  # store ref only
+ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
-    result_type,result=await pipeline_photo(b64,cap,u)
+# Локальная модель
+import tempfile, os
+from inference import predict_image
+with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+    tmp.write(b)
+    tmp_path = tmp.name
+try:
+    skin_result = predict_image(tmp_path)
+    u["local_model_result"] = skin_result
+finally:
+    os.unlink(tmp_path)
+
+# ВОТ ЭТИ ДВЕ СТРОКИ ДОЛЖНЫ БЫТЬ ЗДЕСЬ — НЕ ВНУТРИ finally!
+cap=(upd.message.caption or "").strip()
+u["photo_b64"]=b64[:100]
+# store ref only
+ result_type,result=await pipeline_photo(b64,cap,u)
 
     try: await st.delete()
     except: pass
