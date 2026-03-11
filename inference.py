@@ -3,12 +3,15 @@ inference.py — Предсказание кожного заболевания 
 Подключается к боту как модуль
 """
 import json
+import os
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
 
-MODEL_PATH = "best_model.pth"
+# Читаем путь к модели из переменной окружения (для Railway Volume)
+# По умолчанию ищет в текущей папке
+MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pth")
 CLASS_MAP_PATH = "class_map.json"
 IMG_SIZE = 300
 CONFIDENCE_THRESHOLD = 0.5
