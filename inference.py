@@ -4,14 +4,30 @@ inference.py — Предсказание кожного заболевания 
 """
 import json
 import os
+import urllib.request
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
 
-# Читаем путь к модели из переменной окружения (для Railway Volume)
-# По умолчанию ищет в текущей папке
+# Путь к модели (локальный или через переменную окружения)
 MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pth")
+HF_MODEL_URL = "https://huggingface.co/danyil163/SCINCOACH/resolve/main/best_model.pth"
+
+
+def _download_model_if_needed():
+    if os.path.exists(MODEL_PATH):
+        return
+    print(f"⬇️  Скачиваю модель с HuggingFace → {MODEL_PATH}")
+    os.makedirs(os.path.dirname(MODEL_PATH) or ".", exist_ok=True)
+
+    def _progress(count, block_size, total_size):
+        if total_size > 0 and count % 500 == 0:
+            pct = min(count * block_size / total_size * 100, 100)
+            print(f"   {pct:.0f}%", flush=True)
+
+    urllib.request.urlretrieve(HF_MODEL_URL, MODEL_PATH, _progress)
+    print("✅ Модель скачана")
 CLASS_MAP_PATH = "class_map.json"
 IMG_SIZE = 300
 CONFIDENCE_THRESHOLD = 0.5
@@ -34,6 +50,7 @@ def load_model():
     if _model is not None:
         return
 
+    _download_model_if_needed()
     _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     with open(CLASS_MAP_PATH, "r", encoding="utf-8") as f:
