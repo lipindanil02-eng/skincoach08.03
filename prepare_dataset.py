@@ -29,62 +29,173 @@ HAM_CLASS_MAP = {
     "vasc":  "other",       # vascular → other (мало фото)
 }
 
-# Fitzpatrick17k: label → наши классы (lowercase matching)
+# Fitzpatrick17k: label → наши классы (ПОЛНЫЙ маппинг всех 114+ условий)
 FITZ_CLASS_MAP = {
-    # Псориаз
-    "psoriasis":                     "psoriasis",
-    "pustular psoriasis":            "psoriasis",
-    "guttate psoriasis":             "psoriasis",
-    "inverse psoriasis":             "psoriasis",
-    "plaque psoriasis":              "psoriasis",
+    # ── МЕЛАНОМА ──────────────────────────────────────────────
+    "melanoma":                                  "melanoma",
+    "malignant melanoma":                        "melanoma",
+    "superficial spreading melanoma ssm":        "melanoma",
+    "superficial spreading melanoma":            "melanoma",
+    "nodular melanoma":                          "melanoma",
+    "lentigo maligna":                           "melanoma",
+    "melanocytic nevi":                          "nevus",
 
-    # Экзема
-    "eczema":                        "eczema",
-    "dyshidrotic eczema":            "eczema",
-    "nummular eczema":               "eczema",
-    "atopic dermatitis":             "eczema",
+    # ── НЕВУС ─────────────────────────────────────────────────
+    "nevocytic nevus":                           "nevus",
+    "halo nevus":                                "nevus",
+    "congenital nevus":                          "nevus",
+    "becker nevus":                              "nevus",
+    "epidermal nevus":                           "nevus",
+    "nevus sebaceous of jadassohn":              "nevus",
+    "naevus comedonicus":                        "nevus",
+    "spitz nevus":                               "nevus",
 
-    # Дерматит
-    "allergic contact dermatitis":   "dermatitis",
-    "contact dermatitis":            "dermatitis",
-    "seborrheic dermatitis":         "dermatitis",
-    "perioral dermatitis":           "dermatitis",
-    "irritant contact dermatitis":   "dermatitis",
+    # ── БАЗАЛЬНОКЛЕТОЧНЫЙ РАК ─────────────────────────────────
+    "basal cell carcinoma":                      "basal_cell_carcinoma",
+    "basal cell carcinoma morpheiform":          "basal_cell_carcinoma",
+    "solid cystic basal cell carcinoma":         "basal_cell_carcinoma",
+    "nodular basal cell carcinoma":              "basal_cell_carcinoma",
 
-    # Акне
-    "acne":                          "acne",
-    "acne vulgaris":                 "acne",
-    "comedonal acne":                "acne",
-    "cystic acne":                   "acne",
+    # ── ПЛОСКОКЛЕТОЧНЫЙ РАК / АКТИНИЧЕСКИЙ КЕРАТОЗ ───────────
+    "actinic keratosis":                         "actinic_keratosis",
+    "actinic keratoses":                         "actinic_keratosis",
+    "squamous cell carcinoma":                   "actinic_keratosis",
+    "disseminated actinic porokeratosis":        "actinic_keratosis",
+    "porokeratosis actinic":                     "actinic_keratosis",
+    "porokeratosis of mibelli":                  "actinic_keratosis",
+    "sun damaged skin":                          "actinic_keratosis",
+    "kaposi sarcoma":                            "actinic_keratosis",
+    "mycosis fungoides":                         "actinic_keratosis",
+    "langerhans cell histiocytosis":             "actinic_keratosis",
 
-    # Витилиго
-    "vitiligo":                      "vitiligo",
+    # ── КЕРАТОЗ (ДОБРОКАЧЕСТВЕННЫЙ) ───────────────────────────
+    "benign keratosis-like lesions":             "keratosis",
+    "seborrheic keratosis":                      "keratosis",
+    "keratosis pilaris":                         "keratosis",
+    "acanthosis nigricans":                      "keratosis",
+    "papilomatosis confluentes and reticulate":  "keratosis",
 
-    # Розацеа
-    "rosacea":                       "rosacea",
+    # ── ПСОРИАЗ ───────────────────────────────────────────────
+    "psoriasis":                                 "psoriasis",
+    "pustular psoriasis":                        "psoriasis",
+    "guttate psoriasis":                         "psoriasis",
+    "inverse psoriasis":                         "psoriasis",
+    "plaque psoriasis":                          "psoriasis",
+    "pityriasis rubra pilaris":                  "psoriasis",
+    "pityriasis rosea":                          "psoriasis",
+    "pityriasis lichenoides chronica":           "psoriasis",
 
-    # Меланома
-    "melanoma":                      "melanoma",
-    "superficial spreading melanoma":"melanoma",
-    "nodular melanoma":              "melanoma",
+    # ── ЭКЗЕМА ────────────────────────────────────────────────
+    "eczema":                                    "eczema",
+    "dyshidrotic eczema":                        "eczema",
+    "nummular eczema":                           "eczema",
+    "atopic dermatitis":                         "eczema",
+    "neurodermatitis":                           "eczema",
+    "neurotic excoriations":                     "eczema",
+    "lichen simplex":                            "eczema",
+    "prurigo nodularis":                         "eczema",
+    "stasis edema":                              "eczema",
 
-    # Базальноклеточный рак
-    "basal cell carcinoma":          "basal_cell_carcinoma",
-    "nodular basal cell carcinoma":  "basal_cell_carcinoma",
+    # ── ДЕРМАТИТ ──────────────────────────────────────────────
+    "allergic contact dermatitis":               "dermatitis",
+    "contact dermatitis":                        "dermatitis",
+    "seborrheic dermatitis":                     "dermatitis",
+    "perioral dermatitis":                       "dermatitis",
+    "irritant contact dermatitis":               "dermatitis",
+    "factitial dermatitis":                      "dermatitis",
+    "drug eruption":                             "dermatitis",
+    "drug induced pigmentary changes":           "dermatitis",
+    "photodermatoses":                           "dermatitis",
+    "fixed eruptions":                           "dermatitis",
+    "erythema multiforme":                       "dermatitis",
+    "stevens johnson syndrome":                  "dermatitis",
+    "dermatomyositis":                           "dermatitis",
 
-    # Актинический кератоз
-    "actinic keratosis":             "actinic_keratosis",
-    "squamous cell carcinoma":       "actinic_keratosis",  # похожи клинически
+    # ── АКНЕ ──────────────────────────────────────────────────
+    "acne":                                      "acne",
+    "acne vulgaris":                             "acne",
+    "comedonal acne":                            "acne",
+    "cystic acne":                               "acne",
+    "folliculitis":                              "acne",
+    "rhinophyma":                                "acne",
+    "fordyce spots":                             "acne",
+    "milia":                                     "acne",
+    "hidradenitis":                              "acne",
+    "syringoma":                                 "acne",
 
-    # Крапивница и другое
-    "urticaria":                     "other",
-    "scabies":                       "other",
-    "tinea":                         "other",
-    "tinea versicolor":              "other",
-    "folliculitis":                  "other",
-    "molluscum contagiosum":         "other",
-    "warts":                         "other",
-    "keloid":                        "other",
+    # ── ВИТИЛИГО ──────────────────────────────────────────────
+    "vitiligo":                                  "vitiligo",
+    "incontinentia pigmenti":                    "vitiligo",
+    "tuberous sclerosis":                        "vitiligo",
+
+    # ── РОЗАЦЕА ───────────────────────────────────────────────
+    "rosacea":                                   "rosacea",
+    "telangiectases":                            "rosacea",
+    "port wine stain":                           "rosacea",
+    "livedo reticularis":                        "rosacea",
+    "erythema nodosum":                          "rosacea",
+    "erythema elevatum diutinum":                "rosacea",
+    "erythema annulare centrifigum":             "rosacea",
+
+    # ── ЛИШАЙ / АУТОИММУННЫЕ ──────────────────────────────────
+    "lichen planus":                             "other",
+    "lichen amyloidosis":                        "other",
+    "lupus erythematosus":                       "other",
+    "lupus subacute":                            "other",
+    "scleroderma":                               "other",
+    "scleromyxedema":                            "other",
+    "sarcoidosis":                               "other",
+    "behcets disease":                           "other",
+    "dariers disease":                           "other",
+    "hailey hailey disease":                     "other",
+    "epidermolysis bullosa":                     "other",
+    "acquired autoimmune bullous diseaseherpes gestationis": "other",
+    "pemphigus":                                 "other",
+    "dermatomyositis":                           "other",
+    "necrobiosis lipoidica":                     "other",
+    "granuloma annulare":                        "other",
+    "granuloma pyogenic":                        "other",
+    "pyogenic granuloma":                        "other",
+
+    # ── ИНФЕКЦИИ И ПАРАЗИТЫ ───────────────────────────────────
+    "scabies":                                   "other",
+    "pediculosis lids":                          "other",
+    "myiasis":                                   "other",
+    "nematode infection":                        "other",
+    "tick bite":                                 "other",
+    "tungiasis":                                 "other",
+    "lyme disease":                              "other",
+    "tinea":                                     "other",
+    "tinea versicolor":                          "other",
+    "molluscum contagiosum":                     "other",
+    "warts":                                     "other",
+
+    # ── ДОБРОКАЧЕСТВЕННЫЕ ОБРАЗОВАНИЯ ─────────────────────────
+    "dermatofibroma":                            "other",
+    "vascular lesions":                          "other",
+    "keloid":                                    "other",
+    "striae":                                    "other",
+    "xanthomas":                                 "other",
+    "juvenile xanthogranuloma":                  "other",
+    "mucinosis":                                 "other",
+    "mucous cyst":                               "other",
+    "pilar cyst":                                "other",
+    "pilomatricoma":                             "other",
+    "lymphangioma":                              "other",
+    "aplasia cutis":                             "other",
+    "calcinosis cutis":                          "other",
+    "cheilitis":                                 "other",
+    "acrodermatitis enteropathica":              "other",
+    "ehlers danlos syndrome":                    "other",
+    "ichthyosis vulgaris":                       "other",
+    "xeroderma pigmentosum":                     "other",
+    "porphyria":                                 "other",
+    "neurofibromatosis":                         "other",
+    "neutrophilic dermatoses":                   "other",
+    "urticaria":                                 "other",
+    "urticaria pigmentosa":                      "other",
+    "paronychia":                                "other",
+    "lentigo":                                   "other",
 }
 
 ALL_CLASSES = [
