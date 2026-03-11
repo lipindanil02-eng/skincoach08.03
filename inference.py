@@ -4,7 +4,6 @@ inference.py — Предсказание кожного заболевания 
 """
 import json
 import os
-import urllib.request
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
@@ -15,18 +14,44 @@ MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pth")
 HF_MODEL_URL = "https://huggingface.co/danyil163/SCINCOACH/resolve/main/best_model.pth"
 
 
+MIN_MODEL_SIZE = 10 * 1024 * 1024  # 10 MB minimum
+
+
+def _is_valid_model_file(path: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    if os.path.getsize(path) < MIN_MODEL_SIZE:
+        return False
+    try:
+        import zipfile
+        with zipfile.ZipFile(path, "r"):
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def _download_model_if_needed():
-    if os.path.exists(MODEL_PATH):
+    if _is_valid_model_file(MODEL_PATH):
         return
+    if os.path.exists(MODEL_PATH):
+        print(f"⚠️  Файл модели повреждён, удаляю и скачиваю заново...")
+        os.remove(MODEL_PATH)
     print(f"⬇️  Скачиваю модель с HuggingFace → {MODEL_PATH}")
     os.makedirs(os.path.dirname(MODEL_PATH) or ".", exist_ok=True)
 
-    def _progress(count, block_size, total_size):
-        if total_size > 0 and count % 500 == 0:
-            pct = min(count * block_size / total_size * 100, 100)
-            print(f"   {pct:.0f}%", flush=True)
-
-    urllib.request.urlretrieve(HF_MODEL_URL, MODEL_PATH, _progress)
+    import httpx
+    with httpx.stream("GET", HF_MODEL_URL, follow_redirects=True, timeout=300) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length", 0))
+        downloaded = 0
+        with open(MODEL_PATH, "wb") as f:
+            for chunk in r.iter_bytes(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0 and downloaded % (5 * 1024 * 1024) < 65536:
+                    pct = downloaded / total * 100
+                    print(f"   {pct:.0f}%", flush=True)
     print("✅ Модель скачана")
 CLASS_MAP_PATH = "class_map.json"
 IMG_SIZE = 300
@@ -57,7 +82,7 @@ def load_model():
         _class_map = json.load(f)
 
     num_classes = len(_class_map)
-    checkpoint = torch.load(MODEL_PATH, map_location=_device)
+    checkpoint = torch.load(MODEL_PATH, map_location=_device, weights_only=False)
     model_name = checkpoint.get("model_name", "efficientnet_b3")
 
     if model_name == "efficientnet_b3":
