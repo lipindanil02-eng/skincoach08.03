@@ -1,1 +1,1 @@
-web: sh -c 'python -u bot.py & python upload_server.py'
+web: python upload_server.py
