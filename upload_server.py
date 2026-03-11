@@ -31,19 +31,36 @@ class UploadHandler(http.server.BaseHTTPRequestHandler):
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
-        if content_length == 0:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"No data\n")
-            return
 
         os.makedirs(os.path.dirname(UPLOAD_PATH), exist_ok=True)
 
         print(f"Получаю файл: {content_length} байт → {UPLOAD_PATH}")
-        data = self.rfile.read(content_length)
 
+        received = 0
         with open(UPLOAD_PATH, "wb") as f:
-            f.write(data)
+            if content_length > 0:
+                remaining = content_length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+                    remaining -= len(chunk)
+            else:
+                # chunked или без Content-Length
+                while True:
+                    chunk = self.rfile.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+
+        if received == 0:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b"No data received\n")
+            return
 
         size = os.path.getsize(UPLOAD_PATH)
         print(f"✅ Файл сохранён: {size} байт")

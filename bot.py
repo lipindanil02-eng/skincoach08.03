@@ -76,8 +76,9 @@ HIST="history.json"
 def lh():
     if os.path.exists(HIST):
         try:
-            with open(HIST,"r",encoding="utf-8") as f: return json.load(f)
-        except: return {}
+            data=json.load(open(HIST,"r",encoding="utf-8"))
+            if isinstance(data,dict): return data
+        except: pass
     return {}
 def sh(h):
     try:
@@ -376,6 +377,9 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     try:
         skin_result = predict_image(tmp_path)
         u["local_model_result"] = skin_result
+    except Exception as e:
+        log.warning(f"Local model skip: {e}")
+        u["local_model_result"] = None
     finally:
         os.unlink(tmp_path)
 
