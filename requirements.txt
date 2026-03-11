@@ -1,6 +1,7 @@
 python-telegram-bot==22.6
 python-dotenv==1.0.1
 httpx==0.28.1
-torch
-torchvision
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
 Pillow
