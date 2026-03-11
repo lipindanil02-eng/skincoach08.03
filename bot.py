@@ -76,8 +76,9 @@ HIST="history.json"
 def lh():
     if os.path.exists(HIST):
         try:
-            with open(HIST,"r",encoding="utf-8") as f: return json.load(f)
-        except: return {}
+            data=json.load(open(HIST,"r",encoding="utf-8"))
+            if isinstance(data,dict): return data
+        except: pass
     return {}
 def sh(h):
     try:
