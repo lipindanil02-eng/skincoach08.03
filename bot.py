@@ -377,6 +377,9 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     try:
         skin_result = predict_image(tmp_path)
         u["local_model_result"] = skin_result
+    except Exception as e:
+        log.warning(f"Local model skip: {e}")
+        u["local_model_result"] = None
     finally:
         os.unlink(tmp_path)
 
