@@ -405,6 +405,32 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         await send(upd.message,reply)
         return
 
+    # Labs input
+    if u["state"]==S_LABS:
+        t_lower=txt.strip().lower()
+        # Exit without saving
+        if any(kw in t_lower for kw in ("пропустить","skip","нет","не сейчас","позже")):
+            u["state"]=S_ACTIVE;sh(h)
+            await upd.message.reply_text("Хорошо, продолжай программу! Когда сдашь анализы — напиши /labs")
+            return
+        # Looks like lab results (digits, = or :, or keywords)
+        has_numbers=any(c.isdigit() for c in txt)
+        has_separator=("=" in txt or ":" in txt)
+        has_keywords=any(kw in t_lower for kw in ("витамин","цинк","ферритин","ттг","иге","igg","соэ","crp","ige"))
+        if has_numbers or has_separator or has_keywords:
+            u["labs_raw"]=txt.strip()
+            u["labs_submitted_at"]=datetime.now().isoformat()
+            u["state"]=S_ACTIVE;sh(h)
+            st2=await upd.message.reply_text("Принял анализы. Интерпретирую... ⏳")
+            await interpret_labs(u,upd.message)
+            try: await st2.delete()
+            except: pass
+            return
+        # Unknown message — prompt user
+        await upd.message.reply_text(
+            "Пришли фото бланка, напиши значения (D=18, цинк=7) или напиши пропустить")
+        return
+
     # Active program - chat
     if u["state"]==S_ACTIVE:
         u["msgs"].append({"role":"user","content":txt});u["msgs"]=tm(u["msgs"])
@@ -450,6 +476,34 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
     if u["state"] in (S_NAME,S_DUR,S_TRIED):
         await upd.message.reply_text("Сначала познакомимся. /start"); return
+
+    # If waiting for labs — do OCR, not skin diagnosis
+    if u["state"]==S_LABS:
+        st=await upd.message.reply_text("🔬 Читаю бланк анализов... ⏳")
+        await upd.message.chat.send_action(ChatAction.TYPING)
+        try:
+            ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+            b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
+            ocr_prompt="Это фото бланка лабораторных анализов. Извлеки все показатели и их значения в формате: Название = значение единица. Только показатели, без лишнего текста."
+            raw=await call_raw([{"role":"system","content":ocr_prompt},
+                {"role":"user","content":[{"type":"text","text":"Извлеки показатели"},
+                    {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
+                VISION_M,VIS_FB,500)
+            u["labs_raw"]=raw.strip()
+            u["labs_submitted_at"]=datetime.now().isoformat()
+        except Exception as e:
+            log.error(f"Labs OCR fail: {e}")
+            try: await st.delete()
+            except: pass
+            await upd.message.reply_text("Не удалось прочитать бланк. Напиши значения текстом (D=18, цинк=7.2)")
+            sh(h); return
+        try: await st.delete()
+        except: pass
+        u["state"]=S_ACTIVE
+        sh(h)
+        await upd.message.reply_text(f"Прочитал анализы:\n{u['labs_raw']}\n\nИнтерпретирую... ⏳")
+        await interpret_labs(u,upd.message)
+        return
 
     st=await upd.message.reply_text(
         "📸 Фото получено. Запускаю 8-ступенчатый анализ...\n\n"
