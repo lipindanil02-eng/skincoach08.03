@@ -613,7 +613,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
+    if u["state"] not in (S_ACTIVE,S_LABS): await upd.message.reply_text("/start"); return
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
@@ -649,8 +649,20 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if u["day"] in surprises:
         gam_suffix += surprises[u["day"]]
 
-    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"]);sh(h)
+    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"])
     await send(upd.message, plan + (f"\n\n⭐ +{POINTS['daily_next']} очков" if not gam_suffix else "") + gam_suffix)
+    if u["day"]==22:
+        if u.get("labs_raw"):
+            await upd.message.reply_text(
+                "🔬 Прошло 3 недели! Обнови анализы для точных рекомендаций.\n"
+                "Пришли новые результаты или напиши пропустить.")
+        else:
+            await upd.message.reply_text(
+                "🔬 Неделя 4 — время анализов!\n\n"
+                "Ты прошёл 3 недели программы. Сдай анализы чтобы скорректировать план.\n\n"
+                + format_labs_message(u.get("diagnosis","")))
+        u["state"]=S_LABS
+    sh(h)
 
 async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
@@ -711,6 +723,14 @@ async def cmd_bonus(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             f"Вступи в группу SkinCoach и получи +7 дней бесплатно!\n\nПосле вступления нажми /bonus ещё раз.",
             reply_markup=keyboard)
 
+async def cmd_labs(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
+    if u["state"] in (S_NAME,S_DUR,S_TRIED,S_PHOTO,S_QUESTIONS):
+        await upd.message.reply_text("Сначала заверши диагностику — пришли фото кожи 📸"); return
+    labs_msg=format_labs_message(u.get("diagnosis",""))
+    u["state"]=S_LABS;sh(h)
+    await upd.message.reply_text(labs_msg)
+
 async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
@@ -719,6 +739,7 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "/next — следующий день\n/status — прогресс + диагноз\n"
         "/achievements — бейджи, уровень, очки\n"
         "/bonus — бонус за вступление в группу\n"
+        "/labs — ввести или обновить анализы\n"
         "/leaderboard — топ участников\n"
         "/start — заново")
 
@@ -792,6 +813,7 @@ def main():
             BotCommand("achievements","🏆 Мои бейджи и очки"),
             BotCommand("leaderboard","🥇 Топ участников"),
             BotCommand("bonus","🎁 Бонус за вступление в группу"),
+            BotCommand("labs","🔬 Анализы — ввести или обновить"),
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
@@ -811,6 +833,7 @@ def main():
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("achievements",cmd_achievements))
     app.add_handler(CommandHandler("bonus",cmd_bonus))
+    app.add_handler(CommandHandler("labs",cmd_labs))
     app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
