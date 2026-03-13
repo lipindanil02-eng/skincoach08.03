@@ -15,7 +15,7 @@
 ## Выбранный подход: Гибрид
 
 - **Список анализов:** хардкод (базовый для всех + персонализированный по диагнозу)
-- **Интерпретация результатов:** LLM через `prompts/4b_labs.txt`
+- **Интерпретация результатов:** LLM через `4b_labs.txt` (корень проекта, как все другие промпты)
 - **Ввод:** фото бланка (OCR через vision модель) или текстом вручную
 
 ---
@@ -64,7 +64,7 @@ DIAGNOSIS_NORM = {
 }
 
 def normalize_diagnosis(text: str) -> str:
-    t = text.lower()
+    t = (text or "").lower()  # None-safe
     for kw, key in DIAGNOSIS_NORM.items():
         if kw in t:
             return key
@@ -167,7 +167,7 @@ u["state"] = S_LABS
 8. **Команда `/labs`:** зарегистрировать `CommandHandler("labs", cmd_labs)`, реализовать `cmd_labs`
 9. **`/skip` НЕ реализуется как команда** — пользователь пишет "пропустить" текстом
 
-### `prompts/4b_labs.txt` (новый файл)
+### `4b_labs.txt` (новый файл, корень проекта)
 
 **Входные данные (подставляются в промпт):**
 - `{name}` — имя пользователя
@@ -245,4 +245,4 @@ u["state"] = S_LABS
 | Файл | Изменение |
 |------|-----------|
 | `bot.py` | S_LABS, LABS_BASE, LABS_BY_DIAGNOSIS, DIAGNOSIS_NORM, normalize_diagnosis(), cmd_labs, обработчики |
-| `prompts/4b_labs.txt` | Создать новый промпт (plain text) |
+| `4b_labs.txt` | Создать новый промпт (plain text, корень проекта) |
