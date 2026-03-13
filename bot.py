@@ -3,6 +3,9 @@ SkinCoach v7 — 8-слойный пайплайн + уточняющие воп
 """
 import tempfile, os
 from inference import predict_image
+from gamification import (ensure_fields, on_first_photo, update_streak,
+    on_program_complete, on_referral_success, on_detailed_answer,
+    format_achievements, format_leaderboard, add_points, award_badge, POINTS)
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
@@ -90,6 +93,7 @@ def gu(h,uid):
         "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
         "recommendations":None,"pending_questions":None,"photo_b64":None,
         "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat()}
+    h[u]=ensure_fields(h[u])
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
@@ -346,6 +350,10 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         msgs=[{"role":"system","content":cp}]+u["msgs"]
         try: reply=await ct(msgs,REASON_M,TXT_FB,600)
         except: reply="Модели заняты. Через минуту."
+        # Gamification: бонус за детальный ответ
+        u, det_notifs = on_detailed_answer(u, len(txt))
+        if det_notifs:
+            reply += "\n" + "".join(det_notifs)
         u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
         await send(upd.message,reply)
         return
@@ -385,6 +393,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     cap=(upd.message.caption or "").strip()
     u["photo_b64"]=b64[:100]
+    is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
     result_type,result=await pipeline_photo(b64,cap,u)
 
     try: await st.delete()
@@ -425,8 +434,16 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["state"]=S_ACTIVE
         if u["day"]==0: u["day"]=1;u["week"]=1
 
+    # Gamification: первое фото
+    gam_msgs = []
+    if is_first_photo and result_type not in ("error", "ask_reshoot"):
+        u, notifs = on_first_photo(u)
+        gam_msgs.extend(notifs)
+
     sh(h)
     msg=intro+diag_text+q_text
+    if gam_msgs:
+        msg += "\n" + "".join(gam_msgs)
     await send(upd.message,msg)
 
     # If no questions — proceed to final immediately
@@ -445,8 +462,11 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
-        await upd.message.reply_text(f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения.")
-        sh(h); return
+        u, notifs = on_program_complete(u)
+        sh(h)
+        msg = f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения."
+        if notifs: msg += "\n" + "".join(notifs)
+        await upd.message.reply_text(msg); return
     u["week"]=((u["day"]-1)//7)+1
     wt=WEEKS.get(u["week"],"Программа");diw=((u["day"]-1)%7)+1
     df=FOCUSES.get(u["week"],{}).get(diw,"Следуй программе")
@@ -458,8 +478,24 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         name=u.get("name","друг"),diagnosis=diag,day_focus=df,context=context)
     try: plan=await ct([{"role":"system","content":pr},{"role":"user","content":f"План на день {u['day']}."}],REASON_M,TXT_FB,600)
     except: plan="Не удалось. /next через минуту."
+
+    # Gamification: стрик + очки за день
+    u, streak_notifs = update_streak(u)
+    u, pts_notifs = add_points(u, POINTS["daily_next"])
+    gam_suffix = "".join(streak_notifs + pts_notifs)
+
+    # Сюрпризы по дням
+    surprises = {
+        7:  "\n\n🎁 Сюрприз! Антивоспалительный смузи: шпинат + куркума + имбирь + кокосовое молоко. Попробуй сегодня!",
+        14: "\n\n🎁 День 14! Разблокирован стресс-протокол: дыхание 4-7-8 перед сном, 5 минут.",
+        21: "\n\n🎁 3 недели! Ты молодец. Посмотри на первое фото — кожа меняется. Продолжай!",
+        28: "\n\n🏆 28 дней пройдено! Это победа. Напиши что изменилось и отправь финальное фото.",
+    }
+    if u["day"] in surprises:
+        gam_suffix += surprises[u["day"]]
+
     u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"]);sh(h)
-    await send(upd.message,plan)
+    await send(upd.message, plan + (f"\n\n⭐ +{POINTS['daily_next']} очков" if not gam_suffix else "") + gam_suffix)
 
 async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
@@ -479,12 +515,57 @@ async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         f"День {u['day']}/28\nНеделя {u['week']}/4 — {wt}\n[{bar}] {pct}%\n\n"
         f"/next — следующий день\n📸 Фото — повторный анализ")
 
+async def cmd_achievements(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
+    await upd.message.reply_text(format_achievements(u))
+
+async def cmd_leaderboard(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh()
+    await upd.message.reply_text(format_leaderboard(h))
+
+async def cmd_bonus(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    from telegram import InlineKeyboardButton,InlineKeyboardMarkup
+    h=lh();uid=upd.effective_user.id;u=gu(h,str(uid))
+    if u.get("group_bonus_claimed"):
+        await upd.message.reply_text("Ты уже получил бонус за вступление в группу 👥")
+        return
+    GROUP = os.getenv("COMMUNITY_GROUP","@skincoach_community")
+    try:
+        member=await ctx.bot.get_chat_member(chat_id=GROUP,user_id=uid)
+        if member.status in ("member","administrator","creator","restricted"):
+            u["group_member"]=True
+            u["group_bonus_claimed"]=True
+            u,notifs=add_points(u,POINTS["group_join"])
+            u,badge_msg=award_badge(u,"group_member")
+            # +7 дней к триалу
+            from datetime import timedelta
+            ts=u.get("trial_start",datetime.now().isoformat())
+            trial_dt=datetime.fromisoformat(ts)
+            u["trial_start"]=(trial_dt-timedelta(days=7)).isoformat()
+            sh(h)
+            msg="✅ Ты в группе! Бонус начислен:\n+7 дней к пробному периоду\n+50 очков"
+            if badge_msg: msg+=badge_msg
+            await upd.message.reply_text(msg)
+        else:
+            raise Exception("not member")
+    except:
+        keyboard=InlineKeyboardMarkup([[
+            InlineKeyboardButton("👥 Вступить в группу",url=f"https://t.me/{GROUP.lstrip('@')}")
+        ]])
+        await upd.message.reply_text(
+            f"Вступи в группу SkinCoach и получи +7 дней бесплатно!\n\nПосле вступления нажми /bonus ещё раз.",
+            reply_markup=keyboard)
+
 async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
         "📸 Фото — полный анализ с диагнозом и вероятностями\n"
         "💬 Текст — вопросы, отчёты\n\n"
-        "/next — следующий день\n/status — прогресс + диагноз\n/start — заново")
+        "/next — следующий день\n/status — прогресс + диагноз\n"
+        "/achievements — бейджи, уровень, очки\n"
+        "/bonus — бонус за вступление в группу\n"
+        "/leaderboard — топ участников\n"
+        "/start — заново")
 
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
@@ -495,6 +576,9 @@ def main():
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
+    app.add_handler(CommandHandler("achievements",cmd_achievements))
+    app.add_handler(CommandHandler("bonus",cmd_bonus))
+    app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
