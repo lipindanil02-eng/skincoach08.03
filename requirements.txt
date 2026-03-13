@@ -1,4 +1,4 @@
-python-telegram-bot==22.6
+python-telegram-bot[job-queue]==22.6
 python-dotenv==1.0.1
 httpx==0.28.1
 --extra-index-url https://download.pytorch.org/whl/cpu

@@ -7,12 +7,12 @@ from gamification import (ensure_fields, on_first_photo, update_streak,
     on_program_complete, on_referral_success, on_detailed_answer,
     format_achievements, format_leaderboard, add_points, award_badge, POINTS)
 import asyncio,json,os,sys,base64,logging
-from datetime import datetime
+from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Any,Dict,List
 import httpx
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
 
@@ -92,7 +92,8 @@ def gu(h,uid):
     if u not in h: h[u]={"state":S_NAME,"name":None,"duration":None,"tried":None,
         "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
         "recommendations":None,"pending_questions":None,"photo_b64":None,
-        "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat()}
+        "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat(),
+        "last_active":datetime.now().isoformat(),"last_reengagement":None}
     h[u]=ensure_fields(h[u])
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
@@ -300,6 +301,7 @@ async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
+    u["last_active"]=datetime.now().isoformat()
     await upd.message.chat.send_action(ChatAction.TYPING)
 
     # Onboarding
@@ -318,6 +320,7 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
         return
     if u["state"]==S_PHOTO:
+        sh(h)
         await upd.message.reply_text(f"{u.get('name','')}, мне нужно фото. 📸")
         return
 
@@ -373,28 +376,36 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-    b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-
-    # Локальная модель
-    import tempfile, os
-    from inference import predict_image
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        tmp.write(b)
-        tmp_path = tmp.name
     try:
-        skin_result = predict_image(tmp_path)
-        u["local_model_result"] = skin_result
-    except Exception as e:
-        log.warning(f"Local model skip: {e}")
-        u["local_model_result"] = None
-    finally:
-        os.unlink(tmp_path)
+        ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+        b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
-    cap=(upd.message.caption or "").strip()
-    u["photo_b64"]=b64[:100]
-    is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
-    result_type,result=await pipeline_photo(b64,cap,u)
+        # Локальная модель
+        import tempfile, os
+        from inference import predict_image
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(b)
+            tmp_path = tmp.name
+        try:
+            skin_result = predict_image(tmp_path)
+            u["local_model_result"] = skin_result
+        except Exception as e:
+            log.warning(f"Local model skip: {e}")
+            u["local_model_result"] = None
+        finally:
+            os.unlink(tmp_path)
+
+        cap=(upd.message.caption or "").strip()
+        u["photo_b64"]=b64[:100]
+        u["last_active"]=datetime.now().isoformat()
+        is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
+        result_type,result=await pipeline_photo(b64,cap,u)
+    except Exception as e:
+        log.error(f"handle_photo error: {e}")
+        try: await st.delete()
+        except: pass
+        await upd.message.reply_text("Не удалось обработать фото. Попробуй ещё раз или пришли другое фото.")
+        sh(h); return
 
     try: await st.delete()
     except: pass
@@ -567,11 +578,89 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "/leaderboard — топ участников\n"
         "/start — заново")
 
+async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневное утреннее уведомление для активных пользователей"""
+    h = lh()
+    for uid, u in list(h.items()):
+        if u.get("state") != S_ACTIVE: continue
+        day = u.get("day", 0)
+        if day == 0 or day > 28: continue
+        try: chat_id = int(uid)
+        except: continue
+        week = u.get("week", 1)
+        wt = WEEKS.get(week, "Программа")
+        diw = ((day - 1) % 7) + 1
+        df = FOCUSES.get(week, {}).get(diw, "Следуй программе")
+        name = u.get("name", "друг")
+        msg = (f"☀️ Доброе утро, {name}!\n\n"
+               f"День {day}/28 — {W_EMOJI.get(week,'📋')} Неделя {week}: {wt}\n\n"
+               f"🎯 Фокус сегодня: {df}\n\n"
+               f"📸 Пришли фото или напиши как ты сегодня.")
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            log.info(f"Daily notify → {uid}")
+        except Exception as e:
+            log.warning(f"Daily notify {uid}: {e}")
+
+async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
+    """Напоминание пользователям которые молчат 48+ часов"""
+    h = lh()
+    now = datetime.now()
+    changed = False
+    for uid, u in list(h.items()):
+        if u.get("state") not in (S_ACTIVE, S_QUESTIONS): continue
+        if u.get("day", 0) == 0: continue
+        try: chat_id = int(uid)
+        except: continue
+        last = u.get("last_active")
+        if not last: continue
+        try:
+            hours_silent = (now - datetime.fromisoformat(last)).total_seconds() / 3600
+        except: continue
+        if hours_silent < 48: continue
+        last_notif = u.get("last_reengagement")
+        if last_notif:
+            try:
+                if (now - datetime.fromisoformat(last_notif)).total_seconds() < 86400:
+                    continue
+            except: pass
+        name = u.get("name", "друг")
+        msg = f"👋 {name}, как твоя кожа?\n\nПришли фото или напиши как ты — продолжим вместе."
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            u["last_reengagement"] = now.isoformat()
+            changed = True
+            log.info(f"Reengagement → {uid}")
+        except Exception as e:
+            log.warning(f"Reengagement {uid}: {e}")
+    if changed: sh(h)
+
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
     if sys.platform=="win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    app=ApplicationBuilder().token(TOKEN).build()
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            BotCommand("start","🔄 Начать заново / регистрация"),
+            BotCommand("help","ℹ️ Справка по боту"),
+            BotCommand("status","📊 Мой прогресс и диагноз"),
+            BotCommand("next","➡️ Следующий день программы"),
+            BotCommand("achievements","🏆 Мои бейджи и очки"),
+            BotCommand("leaderboard","🥇 Топ участников"),
+            BotCommand("bonus","🎁 Бонус за вступление в группу"),
+        ])
+        notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
+        application.job_queue.run_daily(
+            send_daily_notifications,
+            time=dtime(hour=notify_hour, minute=0)
+        )
+        application.job_queue.run_repeating(
+            send_reengagement,
+            interval=43200,   # каждые 12 часов
+            first=3600        # первый запуск через 1 час после старта
+        )
+        log.info(f"Scheduler: daily at {notify_hour}:00 UTC, reengagement every 12h")
+    app=ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
