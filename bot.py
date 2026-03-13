@@ -153,8 +153,12 @@ def gu(h,uid):
         "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
         "recommendations":None,"pending_questions":None,"photo_b64":None,
         "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat(),
-        "last_active":datetime.now().isoformat(),"last_reengagement":None}
+        "last_active":datetime.now().isoformat(),"last_reengagement":None,
+        "labs_raw":None,"labs_submitted_at":None}
     h[u]=ensure_fields(h[u])
+    # Migration for existing users (ensure_fields doesn't know about labs fields)
+    if "labs_raw" not in h[u]: h[u]["labs_raw"]=None
+    if "labs_submitted_at" not in h[u]: h[u]["labs_submitted_at"]=None
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
@@ -423,6 +427,24 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     u["state"]=S_NAME;sh(h)
     await upd.message.reply_text("Как тебя зовут?")
+
+async def interpret_labs(u, msg):
+    """Call 4b_labs.txt prompt and send interpretation to user"""
+    labs_raw=u.get("labs_raw","")
+    if not labs_raw: return
+    pr=rp("4b_labs.txt","Интерпретируй анализы.")
+    pr=pr.replace("{name}",u.get("name","друг"))
+    pr=pr.replace("{diagnosis}",u.get("diagnosis","не определено"))
+    pr=pr.replace("{duration}",u.get("duration","?"))
+    pr=pr.replace("{labs_raw}",labs_raw)
+    try:
+        reply=await ct([{"role":"system","content":pr},
+            {"role":"user","content":"Интерпретируй мои анализы."}],
+            REASON_M,TXT_FB,800)
+    except Exception as e:
+        log.error(f"interpret_labs fail: {e}")
+        reply="Не удалось интерпретировать анализы. Попробуй позже или задай вопрос текстом."
+    await send(msg,reply)
 
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
