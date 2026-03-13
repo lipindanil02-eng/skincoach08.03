@@ -74,8 +74,8 @@ def xj(t):
         except: pass
     raise ValueError(f"No JSON: {t[:300]}")
 
-# History
-HIST="history.json"
+# History — хранить в /data/ если задан HIST_PATH (Railway Volume), иначе локально
+HIST=os.getenv("HIST_PATH","history.json")
 def lh():
     if os.path.exists(HIST):
         try:
