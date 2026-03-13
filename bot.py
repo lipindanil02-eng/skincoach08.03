@@ -33,6 +33,64 @@ log=logging.getLogger("skincoach")
 
 # States
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
+S_LABS="labs"
+
+# Labs — списки анализов
+LABS_BASE=[
+    "ОАК (общий анализ крови)",
+    "СОЭ и CRP (воспаление)",
+    "Витамин D",
+    "Цинк",
+    "IgE общий",
+    "Гистамин",
+    "Копрограмма",
+    "Анализ на паразитов (3-кратный)",
+    "Дисбактериоз",
+    "Ревматоидный фактор (RF)",
+]
+
+DIAGNOSIS_NORM={
+    "меланом":"melanoma","melanoma":"melanoma",
+    "невус":"nevus","родинк":"nevus","nevus":"nevus",
+    "акне":"acne","прыщ":"acne","угр":"acne","acne":"acne",
+    "атоп":"atopy","экзем":"atopy","atopy":"atopy",
+    "себоре":"seborrhea","seborrhea":"seborrhea",
+}
+
+LABS_BY_DIAGNOSIS={
+    "melanoma":["Онкомаркеры (LDH, S100B)","Биопсия (консультация дерматолога)"],
+    "nevus":["Дерматоскопия (консультация)"],
+    "acne":["ДГЭАС, тестостерон, ЛГ/ФСГ (гормоны)","Глюкоза, инсулин (сахар)"],
+    "atopy":["Специфические IgE (аллергопанель)","Панель пищевой непереносимости"],
+    "seborrhea":["ТТГ, Т3, Т4 (щитовидная)","Ферритин"],
+    "other":["Ферритин","ТТГ"],
+}
+
+def normalize_diagnosis(text:str)->str:
+    t=(text or "").lower()
+    for kw,key in DIAGNOSIS_NORM.items():
+        if kw in t: return key
+    return "other"
+
+def format_labs_message(diagnosis:str)->str:
+    dk=normalize_diagnosis(diagnosis)
+    base="\n".join(f"• {x}" for x in LABS_BASE)
+    extras=LABS_BY_DIAGNOSIS.get(dk,[])
+    extra_text=""
+    if extras:
+        extra_text=f"\n\n⚠️ Дополнительно для твоего диагноза:\n"+"\n".join(f"• {x}" for x in extras)
+    urgent=""
+    if dk=="melanoma":
+        urgent="\n\n🚨 ВАЖНО: При подозрении на меланому — обратись к дерматологу немедленно, не откладывай!"
+    return (
+        "🔬 По твоему диагнозу рекомендую сдать:\n\n"
+        f"📋 Базовые (важны для всех):\n{base}"
+        f"{extra_text}"
+        f"{urgent}\n\n"
+        "Уже есть готовые анализы? Пришли фото бланка или напиши значения\n"
+        "(пример: D=18, цинк=7.2, IgE=145)\n\n"
+        "Нет анализов пока — напиши пропустить"
+    )
 
 WEEKS={1:"ПИТАНИЕ — убираем провокаторы",2:"НАРУЖНЫЙ УХОД — мыло, масло, крем",
        3:"ЭМОЦИИ — стресс-протокол",4:"АНАЛИЗЫ — контроль и коррекция"}
