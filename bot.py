@@ -52,7 +52,7 @@ LABS_BASE=[
 DIAGNOSIS_NORM={
     "меланом":"melanoma","melanoma":"melanoma",
     "невус":"nevus","родинк":"nevus","nevus":"nevus",
-    "акне":"acne","прыщ":"acne","угр":"acne","acne":"acne",
+    "акне":"acne","прыщ":"acne","угрев":"acne","acne":"acne",
     "атоп":"atopy","экзем":"atopy","atopy":"atopy",
     "себоре":"seborrhea","seborrhea":"seborrhea",
 }
@@ -67,6 +67,8 @@ LABS_BY_DIAGNOSIS={
 }
 
 def normalize_diagnosis(text:str)->str:
+    # Note: DIAGNOSIS_NORM is checked in insertion order — first match wins.
+    # More specific keywords should come before shorter/broader ones.
     t=(text or "").lower()
     for kw,key in DIAGNOSIS_NORM.items():
         if kw in t: return key

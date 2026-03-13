@@ -11,7 +11,12 @@ def test_normalize_melanoma():
 def test_normalize_acne():
     assert normalize_diagnosis("акне") == "acne"
     assert normalize_diagnosis("угревая сыпь") == "acne"
+    assert normalize_diagnosis("угревой дерматит") == "acne"
     assert normalize_diagnosis("прыщи на коже") == "acne"
+
+def test_normalize_acne_no_false_positive():
+    # "угр" was too broad — "угрюмый" should not match acne
+    assert normalize_diagnosis("угрюмый") == "other"
 
 def test_normalize_atopy():
     assert normalize_diagnosis("атопический дерматит") == "atopy"
@@ -56,3 +61,8 @@ def test_format_labs_message_melanoma_urgent_warning():
     msg = format_labs_message("меланома")
     assert "дерматолог" in msg.lower()
     assert any(w in msg.lower() for w in ("срочно", "немедленно", "обратись"))
+
+def test_format_labs_message_none_input():
+    # normalize_diagnosis(None) returns "other", so this should not crash
+    msg = format_labs_message(None)
+    assert "ОАК" in msg
