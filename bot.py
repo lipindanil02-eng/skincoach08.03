@@ -399,10 +399,14 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             reply=f"Ошибка генерации плана. Попробуй /next"; log.error(f"Final:{e}")
         u["msgs"].append({"role":"user","content":txt})
         u["msgs"].append({"role":"assistant","content":reply})
-        u["msgs"]=tm(u["msgs"]);sh(h)
+        u["msgs"]=tm(u["msgs"])
         try: await st.delete()
         except: pass
         await send(upd.message,reply)
+        # Offer lab tests after diagnosis
+        labs_msg=format_labs_message(u.get("diagnosis",""))
+        u["state"]=S_LABS;sh(h)
+        await upd.message.reply_text(labs_msg)
         return
 
     # Labs input
@@ -598,10 +602,14 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         st2=await upd.message.reply_text("Генерирую план... ⏳")
         try: reply=await pipeline_final(u,"")
         except Exception as e: reply="Ошибка. /next"; log.error(f"Final:{e}")
-        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
+        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"])
         try: await st2.delete()
         except: pass
         await send(upd.message,reply)
+        # Offer lab tests after diagnosis
+        labs_msg=format_labs_message(u.get("diagnosis",""))
+        u["state"]=S_LABS;sh(h)
+        await send(upd.message,labs_msg)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
