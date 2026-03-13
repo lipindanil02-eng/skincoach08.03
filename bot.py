@@ -373,28 +373,35 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-    b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-
-    # Локальная модель
-    import tempfile, os
-    from inference import predict_image
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        tmp.write(b)
-        tmp_path = tmp.name
     try:
-        skin_result = predict_image(tmp_path)
-        u["local_model_result"] = skin_result
-    except Exception as e:
-        log.warning(f"Local model skip: {e}")
-        u["local_model_result"] = None
-    finally:
-        os.unlink(tmp_path)
+        ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+        b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
-    cap=(upd.message.caption or "").strip()
-    u["photo_b64"]=b64[:100]
-    is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
-    result_type,result=await pipeline_photo(b64,cap,u)
+        # Локальная модель
+        import tempfile, os
+        from inference import predict_image
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(b)
+            tmp_path = tmp.name
+        try:
+            skin_result = predict_image(tmp_path)
+            u["local_model_result"] = skin_result
+        except Exception as e:
+            log.warning(f"Local model skip: {e}")
+            u["local_model_result"] = None
+        finally:
+            os.unlink(tmp_path)
+
+        cap=(upd.message.caption or "").strip()
+        u["photo_b64"]=b64[:100]
+        is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
+        result_type,result=await pipeline_photo(b64,cap,u)
+    except Exception as e:
+        log.error(f"handle_photo error: {e}")
+        try: await st.delete()
+        except: pass
+        await upd.message.reply_text("Не удалось обработать фото. Попробуй ещё раз или пришли другое фото.")
+        sh(h); return
 
     try: await st.delete()
     except: pass
