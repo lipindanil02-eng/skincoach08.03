@@ -58,12 +58,18 @@ IMG_SIZE = 300
 CONFIDENCE_THRESHOLD = 0.5
 
 CLASS_LABELS_RU = {
-    "psoriasis":   "Псориаз",
-    "dermatitis":  "Дерматит",
-    "eczema":      "Экзема",
-    "melanoma":    "Меланома",
-    "nevus":       "Невус (родинка)",
-    "other":       "Другое заболевание",
+    "melanoma":              "Меланома",
+    "nevus":                 "Невус (родинка)",
+    "basal_cell_carcinoma":  "Базальноклеточный рак",
+    "actinic_keratosis":     "Актинический кератоз",
+    "keratosis":             "Себорейный кератоз",
+    "psoriasis":             "Псориаз",
+    "eczema":                "Экзема",
+    "dermatitis":            "Дерматит",
+    "acne":                  "Акне",
+    "vitiligo":              "Витилиго",
+    "rosacea":               "Розацеа",
+    "other":                 "Другое заболевание",
 }
 
 _model = None
