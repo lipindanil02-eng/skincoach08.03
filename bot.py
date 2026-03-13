@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any,Dict,List
 import httpx
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
 
@@ -571,7 +571,17 @@ def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
     if sys.platform=="win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    app=ApplicationBuilder().token(TOKEN).build()
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            BotCommand("start","🔄 Начать заново / регистрация"),
+            BotCommand("help","ℹ️ Справка по боту"),
+            BotCommand("status","📊 Мой прогресс и диагноз"),
+            BotCommand("next","➡️ Следующий день программы"),
+            BotCommand("achievements","🏆 Мои бейджи и очки"),
+            BotCommand("leaderboard","🥇 Топ участников"),
+            BotCommand("bonus","🎁 Бонус за вступление в группу"),
+        ])
+    app=ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
