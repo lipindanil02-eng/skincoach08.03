@@ -33,6 +33,66 @@ log=logging.getLogger("skincoach")
 
 # States
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
+S_LABS="labs"
+
+# Labs — списки анализов
+LABS_BASE=[
+    "ОАК (общий анализ крови)",
+    "СОЭ и CRP (воспаление)",
+    "Витамин D",
+    "Цинк",
+    "IgE общий",
+    "Гистамин",
+    "Копрограмма",
+    "Анализ на паразитов (3-кратный)",
+    "Дисбактериоз",
+    "Ревматоидный фактор (RF)",
+]
+
+DIAGNOSIS_NORM={
+    "меланом":"melanoma","melanoma":"melanoma",
+    "невус":"nevus","родинк":"nevus","nevus":"nevus",
+    "акне":"acne","прыщ":"acne","угрев":"acne","acne":"acne",
+    "атоп":"atopy","экзем":"atopy","atopy":"atopy",
+    "себоре":"seborrhea","seborrhea":"seborrhea",
+}
+
+LABS_BY_DIAGNOSIS={
+    "melanoma":["Онкомаркеры (LDH, S100B)","Биопсия (консультация дерматолога)"],
+    "nevus":["Дерматоскопия (консультация)"],
+    "acne":["ДГЭАС, тестостерон, ЛГ/ФСГ (гормоны)","Глюкоза, инсулин (сахар)"],
+    "atopy":["Специфические IgE (аллергопанель)","Панель пищевой непереносимости"],
+    "seborrhea":["ТТГ, Т3, Т4 (щитовидная)","Ферритин"],
+    "other":["Ферритин","ТТГ"],
+}
+
+def normalize_diagnosis(text:str)->str:
+    # Note: DIAGNOSIS_NORM is checked in insertion order — first match wins.
+    # More specific keywords should come before shorter/broader ones.
+    t=(text or "").lower()
+    for kw,key in DIAGNOSIS_NORM.items():
+        if kw in t: return key
+    return "other"
+
+def format_labs_message(diagnosis:str)->str:
+    dk=normalize_diagnosis(diagnosis)
+    base="\n".join(f"• {x}" for x in LABS_BASE)
+    extras=LABS_BY_DIAGNOSIS.get(dk,[])
+    extra_text=""
+    if extras:
+        extra_text=f"\n\n⚠️ Дополнительно для твоего диагноза:\n"+"\n".join(f"• {x}" for x in extras)
+    urgent=""
+    if dk=="melanoma":
+        urgent="\n\n🚨 ВАЖНО: При подозрении на меланому — обратись к дерматологу немедленно, не откладывай!"
+    return (
+        "🔬 По твоему диагнозу рекомендую сдать:\n\n"
+        f"📋 Базовые (важны для всех):\n{base}"
+        f"{extra_text}"
+        f"{urgent}\n\n"
+        "Уже есть готовые анализы? Пришли фото бланка или напиши значения\n"
+        "(пример: D=18, цинк=7.2, IgE=145)\n\n"
+        "Нет анализов пока — напиши пропустить"
+    )
 
 WEEKS={1:"ПИТАНИЕ — убираем провокаторы",2:"НАРУЖНЫЙ УХОД — мыло, масло, крем",
        3:"ЭМОЦИИ — стресс-протокол",4:"АНАЛИЗЫ — контроль и коррекция"}
@@ -93,8 +153,12 @@ def gu(h,uid):
         "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
         "recommendations":None,"pending_questions":None,"photo_b64":None,
         "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat(),
-        "last_active":datetime.now().isoformat(),"last_reengagement":None}
+        "last_active":datetime.now().isoformat(),"last_reengagement":None,
+        "labs_raw":None,"labs_submitted_at":None}
     h[u]=ensure_fields(h[u])
+    # Migration for existing users (ensure_fields doesn't know about labs fields)
+    if "labs_raw" not in h[u]: h[u]["labs_raw"]=None
+    if "labs_submitted_at" not in h[u]: h[u]["labs_submitted_at"]=None
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
@@ -335,10 +399,40 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             reply=f"Ошибка генерации плана. Попробуй /next"; log.error(f"Final:{e}")
         u["msgs"].append({"role":"user","content":txt})
         u["msgs"].append({"role":"assistant","content":reply})
-        u["msgs"]=tm(u["msgs"]);sh(h)
+        u["msgs"]=tm(u["msgs"])
         try: await st.delete()
         except: pass
         await send(upd.message,reply)
+        # Offer lab tests after diagnosis
+        labs_msg=format_labs_message(u.get("diagnosis",""))
+        u["state"]=S_LABS;sh(h)
+        await upd.message.reply_text(labs_msg)
+        return
+
+    # Labs input
+    if u["state"]==S_LABS:
+        t_lower=txt.strip().lower()
+        # Exit without saving
+        if any(kw in t_lower for kw in ("пропустить","skip","нет","не сейчас","позже")):
+            u["state"]=S_ACTIVE;sh(h)
+            await upd.message.reply_text("Хорошо, продолжай программу! Когда сдашь анализы — напиши /labs")
+            return
+        # Looks like lab results (digits, = or :, or keywords)
+        has_numbers=any(c.isdigit() for c in txt)
+        has_separator=("=" in txt or ":" in txt)
+        has_keywords=any(kw in t_lower for kw in ("витамин","цинк","ферритин","ттг","иге","igg","соэ","crp","ige"))
+        if has_numbers or has_separator or has_keywords:
+            u["labs_raw"]=txt.strip()
+            u["labs_submitted_at"]=datetime.now().isoformat()
+            u["state"]=S_ACTIVE;sh(h)
+            st2=await upd.message.reply_text("Принял анализы. Интерпретирую... ⏳")
+            await interpret_labs(u,upd.message)
+            try: await st2.delete()
+            except: pass
+            return
+        # Unknown message — prompt user
+        await upd.message.reply_text(
+            "Пришли фото бланка, напиши значения (D=18, цинк=7) или напиши пропустить")
         return
 
     # Active program - chat
@@ -364,10 +458,56 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     u["state"]=S_NAME;sh(h)
     await upd.message.reply_text("Как тебя зовут?")
 
+async def interpret_labs(u, msg):
+    """Call 4b_labs.txt prompt and send interpretation to user"""
+    labs_raw=u.get("labs_raw","")
+    if not labs_raw: return
+    pr=rp("4b_labs.txt","Интерпретируй анализы.")
+    pr=pr.replace("{name}",u.get("name","друг"))
+    pr=pr.replace("{diagnosis}",u.get("diagnosis","не определено"))
+    pr=pr.replace("{duration}",u.get("duration","?"))
+    pr=pr.replace("{labs_raw}",labs_raw)
+    try:
+        reply=await ct([{"role":"system","content":pr},
+            {"role":"user","content":"Интерпретируй мои анализы."}],
+            REASON_M,TXT_FB,800)
+    except Exception as e:
+        log.error(f"interpret_labs fail: {e}")
+        reply="Не удалось интерпретировать анализы. Попробуй позже или задай вопрос текстом."
+    await send(msg,reply)
+
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
     if u["state"] in (S_NAME,S_DUR,S_TRIED):
         await upd.message.reply_text("Сначала познакомимся. /start"); return
+
+    # If waiting for labs — do OCR, not skin diagnosis
+    if u["state"]==S_LABS:
+        st=await upd.message.reply_text("🔬 Читаю бланк анализов... ⏳")
+        await upd.message.chat.send_action(ChatAction.TYPING)
+        try:
+            ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+            b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
+            ocr_prompt="Это фото бланка лабораторных анализов. Извлеки все показатели и их значения в формате: Название = значение единица. Только показатели, без лишнего текста."
+            raw=await call_raw([{"role":"system","content":ocr_prompt},
+                {"role":"user","content":[{"type":"text","text":"Извлеки показатели"},
+                    {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
+                VISION_M,VIS_FB,500)
+            u["labs_raw"]=raw.strip()
+            u["labs_submitted_at"]=datetime.now().isoformat()
+        except Exception as e:
+            log.error(f"Labs OCR fail: {e}")
+            try: await st.delete()
+            except: pass
+            await upd.message.reply_text("Не удалось прочитать бланк. Напиши значения текстом (D=18, цинк=7.2)")
+            sh(h); return
+        try: await st.delete()
+        except: pass
+        u["state"]=S_ACTIVE
+        sh(h)
+        await upd.message.reply_text(f"Прочитал анализы:\n{u['labs_raw']}\n\nИнтерпретирую... ⏳")
+        await interpret_labs(u,upd.message)
+        return
 
     st=await upd.message.reply_text(
         "📸 Фото получено. Запускаю 8-ступенчатый анализ...\n\n"
@@ -376,6 +516,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
+    result_type=None
     try:
         ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
         b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
@@ -406,9 +547,9 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         except: pass
         await upd.message.reply_text("Не удалось обработать фото. Попробуй ещё раз или пришли другое фото.")
         sh(h); return
-
-    try: await st.delete()
-    except: pass
+    finally:
+        try: await st.delete()
+        except: pass
 
     if result_type=="ask_reshoot":
         await upd.message.reply_text(f"📸 {result}")
@@ -462,14 +603,18 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         st2=await upd.message.reply_text("Генерирую план... ⏳")
         try: reply=await pipeline_final(u,"")
         except Exception as e: reply="Ошибка. /next"; log.error(f"Final:{e}")
-        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
+        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"])
         try: await st2.delete()
         except: pass
         await send(upd.message,reply)
+        # Offer lab tests after diagnosis
+        labs_msg=format_labs_message(u.get("diagnosis",""))
+        u["state"]=S_LABS;sh(h)
+        await send(upd.message,labs_msg)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
+    if u["state"] not in (S_ACTIVE,S_LABS): await upd.message.reply_text("/start"); return
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
@@ -505,8 +650,20 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if u["day"] in surprises:
         gam_suffix += surprises[u["day"]]
 
-    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"]);sh(h)
+    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"])
     await send(upd.message, plan + (f"\n\n⭐ +{POINTS['daily_next']} очков" if not gam_suffix else "") + gam_suffix)
+    if u["day"]==22:
+        if u.get("labs_raw"):
+            await upd.message.reply_text(
+                "🔬 Прошло 3 недели! Обнови анализы для точных рекомендаций.\n"
+                "Пришли новые результаты или напиши пропустить.")
+        else:
+            await upd.message.reply_text(
+                "🔬 Неделя 4 — время анализов!\n\n"
+                "Ты прошёл 3 недели программы. Сдай анализы чтобы скорректировать план.\n\n"
+                + format_labs_message(u.get("diagnosis","")))
+        u["state"]=S_LABS
+    sh(h)
 
 async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
@@ -567,6 +724,14 @@ async def cmd_bonus(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             f"Вступи в группу SkinCoach и получи +7 дней бесплатно!\n\nПосле вступления нажми /bonus ещё раз.",
             reply_markup=keyboard)
 
+async def cmd_labs(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
+    if u["state"] in (S_NAME,S_DUR,S_TRIED,S_PHOTO,S_QUESTIONS):
+        await upd.message.reply_text("Сначала заверши диагностику — пришли фото кожи 📸"); return
+    labs_msg=format_labs_message(u.get("diagnosis",""))
+    u["state"]=S_LABS;sh(h)
+    await upd.message.reply_text(labs_msg)
+
 async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
@@ -575,6 +740,7 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "/next — следующий день\n/status — прогресс + диагноз\n"
         "/achievements — бейджи, уровень, очки\n"
         "/bonus — бонус за вступление в группу\n"
+        "/labs — ввести или обновить анализы\n"
         "/leaderboard — топ участников\n"
         "/start — заново")
 
@@ -648,6 +814,7 @@ def main():
             BotCommand("achievements","🏆 Мои бейджи и очки"),
             BotCommand("leaderboard","🥇 Топ участников"),
             BotCommand("bonus","🎁 Бонус за вступление в группу"),
+            BotCommand("labs","🔬 Анализы — ввести или обновить"),
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
@@ -667,6 +834,7 @@ def main():
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("achievements",cmd_achievements))
     app.add_handler(CommandHandler("bonus",cmd_bonus))
+    app.add_handler(CommandHandler("labs",cmd_labs))
     app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
