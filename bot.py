@@ -234,7 +234,11 @@ async def pipeline_photo(b64,cap,u):
     # STEP 3: Dermatology Reasoning
     log.info("🔬 3/8 Reasoning...")
     rp3=rp("3_reasoning.txt","Дифференциальная диагностика. JSON.")
-    ctx3=json.dumps({"vision":vis,"patient":uctx},ensure_ascii=False)
+    prev_diag=u.get("diagnosis")
+    prev_conf=u.get("reasoning_data",{}).get("confidence") if u.get("reasoning_data") else None
+    ctx3=json.dumps({"vision":vis,"patient":uctx,
+        "previous_diagnosis":prev_diag if prev_diag else None,
+        "previous_confidence":prev_conf},ensure_ascii=False)
     try:
         reason=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
             STRONG_M,TXT_FB,600)
