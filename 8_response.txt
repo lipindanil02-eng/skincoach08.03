@@ -33,7 +33,8 @@
 (2-3 предложения об общем состоянии и типе кожи)
 
 📊 Оценка кожи: {skin_score.total}/100 — {skin_score.grade}
-Тон: {skin_score.tone}/20 · Увлажнённость: {skin_score.hydration}/20 · Текстура: {skin_score.texture}/20 · Сияние: {skin_score.radiance}/20 · Чистота: {skin_score.cleanliness}/20
+Тон: {skin_score.tone}/15 · Увлажнённость: {skin_score.hydration}/15 · Текстура: {skin_score.texture}/15 · Живость: {skin_score.vitality}/15 · Чистота: {skin_score.cleanliness}/15 · Молодость: {skin_score.youth}/15 · Глаза: {skin_score.eye_area}/10
+Визуальный возраст кожи: {visual_age} лет
 
 (Если есть cosmetic_concerns — добавь блок:)
 🔎 Замечаю:
