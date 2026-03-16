@@ -17,11 +17,13 @@
   "skin_assessment": "краткая оценка состояния кожи",
   "skin_type": "normal/dry/oily/combination",
   "skin_score": {
-    "tone": число из vision,
-    "hydration": число из vision,
-    "texture": число из vision,
-    "radiance": число из vision,
-    "cleanliness": число из vision,
+    "tone": число из vision (0-15),
+    "hydration": число из vision (0-15),
+    "texture": число из vision (0-15),
+    "vitality": число из vision (0-15),
+    "cleanliness": число из vision (0-15),
+    "youth": число из vision (0-15),
+    "eye_area": число из vision (0-10),
     "total": сумма,
     "grade": "Отличная/Хорошая/Средняя/Требует внимания"
   },
