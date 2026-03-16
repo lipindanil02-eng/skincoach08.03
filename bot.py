@@ -2,7 +2,13 @@
 SkinCoach v7 — 8-слойный пайплайн + уточняющие вопросы + 28-дневная программа
 """
 import tempfile, os
-from inference import predict_image
+try:
+    from inference import predict_image
+    INFERENCE_AVAILABLE = True
+except Exception as _inf_err:
+    predict_image = None
+    INFERENCE_AVAILABLE = False
+    import logging as _l; _l.getLogger("skincoach").warning(f"inference not available: {_inf_err}")
 from gamification import (ensure_fields, on_first_photo, update_streak,
     on_program_complete, on_referral_success, on_detailed_answer,
     format_achievements, format_leaderboard, add_points, award_badge, POINTS)
@@ -522,19 +528,21 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
         # Локальная модель
-        import tempfile, os
-        from inference import predict_image
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp.write(b)
-            tmp_path = tmp.name
-        try:
-            skin_result = predict_image(tmp_path)
-            u["local_model_result"] = skin_result
-        except Exception as e:
-            log.warning(f"Local model skip: {e}")
+        if INFERENCE_AVAILABLE and predict_image:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp.write(b)
+                tmp_path = tmp.name
+            try:
+                skin_result = predict_image(tmp_path)
+                u["local_model_result"] = skin_result
+            except Exception as e:
+                log.warning(f"Local model skip: {e}")
+                u["local_model_result"] = None
+            finally:
+                try: os.unlink(tmp_path)
+                except: pass
+        else:
             u["local_model_result"] = None
-        finally:
-            os.unlink(tmp_path)
 
         cap=(upd.message.caption or "").strip()
         u["photo_b64"]=b64[:100]
@@ -744,13 +752,22 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "/leaderboard — топ участников\n"
         "/start — заново")
 
-async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
-    """Ежедневное утреннее уведомление для активных пользователей"""
+async def send_weekly_notifications(context: ContextTypes.DEFAULT_TYPE):
+    """Еженедельное утреннее уведомление для активных пользователей (раз в 7 дней)"""
     h = lh()
+    now = datetime.now()
+    changed = False
     for uid, u in list(h.items()):
         if u.get("state") != S_ACTIVE: continue
         day = u.get("day", 0)
         if day == 0 or day > 28: continue
+        # Отправляем не чаще раза в 7 дней
+        last_notif = u.get("last_weekly_notify")
+        if last_notif:
+            try:
+                days_since = (now - datetime.fromisoformat(last_notif)).total_seconds() / 86400
+                if days_since < 7: continue
+            except: pass
         try: chat_id = int(uid)
         except: continue
         week = u.get("week", 1)
@@ -758,15 +775,18 @@ async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
         diw = ((day - 1) % 7) + 1
         df = FOCUSES.get(week, {}).get(diw, "Следуй программе")
         name = u.get("name", "друг")
-        msg = (f"☀️ Доброе утро, {name}!\n\n"
+        msg = (f"☀️ Привет, {name}! Напоминаю о программе.\n\n"
                f"День {day}/28 — {W_EMOJI.get(week,'📋')} Неделя {week}: {wt}\n\n"
-               f"🎯 Фокус сегодня: {df}\n\n"
-               f"📸 Пришли фото или напиши как ты сегодня.")
+               f"🎯 Фокус этой недели: {df}\n\n"
+               f"📸 Пришли фото или напиши как кожа — продолжим вместе.")
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
-            log.info(f"Daily notify → {uid}")
+            u["last_weekly_notify"] = now.isoformat()
+            changed = True
+            log.info(f"Weekly notify → {uid}")
         except Exception as e:
-            log.warning(f"Daily notify {uid}: {e}")
+            log.warning(f"Weekly notify {uid}: {e}")
+    if changed: sh(h)
 
 async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
     """Напоминание пользователям которые молчат 48+ часов"""
@@ -818,7 +838,7 @@ def main():
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
-            send_daily_notifications,
+            send_weekly_notifications,
             time=dtime(hour=notify_hour, minute=0)
         )
         application.job_queue.run_repeating(
