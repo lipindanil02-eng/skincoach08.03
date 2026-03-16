@@ -516,6 +516,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
+    result_type=None
     try:
         ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
         b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
@@ -546,9 +547,9 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         except: pass
         await upd.message.reply_text("Не удалось обработать фото. Попробуй ещё раз или пришли другое фото.")
         sh(h); return
-
-    try: await st.delete()
-    except: pass
+    finally:
+        try: await st.delete()
+        except: pass
 
     if result_type=="ask_reshoot":
         await upd.message.reply_text(f"📸 {result}")
