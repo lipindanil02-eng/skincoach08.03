@@ -48,6 +48,7 @@ log=logging.getLogger("skincoach")
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
 S_LABS="labs"
 S_COMPETE="compete"
+S_FACE="face"
 
 # Labs — списки анализов
 LABS_BASE=[
@@ -121,6 +122,18 @@ FOCUSES={
     4:{1:"Запись: ОАК, D, ферритин, ТТГ",2:"Копрограмма",3:"Цинк и селен",
        4:"Расшифровка результатов",5:"Коррекция добавок",6:"Персональный протокол",7:"Финальное фото"},
 }
+
+def score_bar(pct: int) -> str:
+    """Return 10-char progress bar for a 0-100 score."""
+    filled = min(10, max(0, pct // 10))
+    return "█" * filled + "░" * (10 - filled)
+
+def score_grade(pct: int) -> str:
+    if pct >= 90: return "Отличная"
+    if pct >= 75: return "Хорошая"
+    if pct >= 60: return "Средняя"
+    if pct >= 45: return "Требует внимания"
+    return "Нужна программа"
 
 # Utils
 def rp(f,d=""):
