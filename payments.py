@@ -44,6 +44,7 @@ def apply_migration_defaults(u: dict) -> None:
         "ref_by": None,
         "ref_count": 0,
         "discount_pct": 0,
+        "notify_daily": None,  # None=not asked, True=yes, False=no
     }
     for key, val in defaults.items():
         if key not in u:

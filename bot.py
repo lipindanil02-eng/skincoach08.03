@@ -25,9 +25,9 @@ from pathlib import Path
 from typing import Any,Dict,List
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
+from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,ContextTypes,filters
 
 load_dotenv()
 
@@ -475,6 +475,8 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         if any(kw in t_lower for kw in ("пропустить","skip","нет","не сейчас","позже")):
             u["state"]=S_ACTIVE;sh(h)
             await upd.message.reply_text("Хорошо, продолжай программу! Когда сдашь анализы — напиши /labs")
+            if u.get("notify_daily") is None:
+                await ask_notify_preference(upd.message)
             return
         # Looks like lab results (digits, = or :, or keywords)
         has_numbers=any(c.isdigit() for c in txt)
@@ -488,6 +490,8 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             await interpret_labs(u,upd.message)
             try: await st2.delete()
             except: pass
+            if u.get("notify_daily") is None:
+                await ask_notify_preference(upd.message)
             return
         # Unknown message — prompt user
         await upd.message.reply_text(
@@ -1013,6 +1017,7 @@ async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
 
         # --- Ежедневное напоминание о программе ---
         if u.get("state") != S_ACTIVE: continue
+        if u.get("notify_daily") is not True: continue
         day = u.get("day", 0)
         if day == 0 or day > 28: continue
         last_notif = u.get("last_daily_notify")
@@ -1070,6 +1075,45 @@ async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning(f"Reengagement {uid}: {e}")
     if changed: sh(h)
+
+
+async def ask_notify_preference(message) -> None:
+    """Отправить вопрос об ежедневных напоминаниях с inline-кнопками."""
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Да, хочу", callback_data="notify:yes"),
+        InlineKeyboardButton("❌ Нет", callback_data="notify:no"),
+    ]])
+    await message.reply_text(
+        "☀️ Хочешь ежедневные напоминания в 9:00 МСК?\n"
+        "Каждый день буду присылать фокус дня по программе.",
+        reply_markup=kb
+    )
+
+
+async def handle_notify_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query
+    await q.answer()
+    uid = upd.effective_user.id
+    h = lh(); u = gu(h, uid)
+    if q.data == "notify:yes":
+        u["notify_daily"] = True
+        sh(h)
+        await q.edit_message_text("✅ Отлично! Буду присылать напоминания каждый день в 9:00 МСК.")
+    elif q.data == "notify:no":
+        u["notify_daily"] = False
+        sh(h)
+        await q.edit_message_text("Хорошо, напоминания отключены. Можно включить через /notify.")
+
+
+async def cmd_notify(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Включить/выключить ежедневные напоминания."""
+    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
+    if u.get("notify_daily"):
+        u["notify_daily"] = False; sh(h)
+        await upd.message.reply_text("🔕 Ежедневные напоминания отключены.")
+    else:
+        await ask_notify_preference(upd.message)
+
 
 async def cmd_subscribe(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
@@ -1264,6 +1308,7 @@ def main():
             BotCommand("compete","🏆 Участвовать в рейтинге кожи"),
             BotCommand("skinrank","🥇 Рейтинг кожи"),
             BotCommand("face","✨ Оценка кожи лица"),
+            BotCommand("notify","🔔 Ежедневные напоминания вкл/выкл"),
             BotCommand("subscribe","💳 Оформить подписку"),
             BotCommand("ref","🎁 Пригласить друга"),
         ])
@@ -1294,6 +1339,8 @@ def main():
     app.add_handler(CommandHandler("revoke",cmd_revoke))
     app.add_handler(CommandHandler("ref",cmd_ref))
     app.add_handler(CommandHandler("face",cmd_face))
+    app.add_handler(CommandHandler("notify",cmd_notify))
+    app.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify:"))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
