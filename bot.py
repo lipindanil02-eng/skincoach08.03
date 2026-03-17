@@ -15,7 +15,9 @@ from gamification import (ensure_fields, on_first_photo, update_streak,
     on_regular_photo_score, on_compete_photo, can_compete_today,
     add_points, award_badge, POINTS)
 from payments import (is_access_allowed, can_ask_question, use_question,
-                      apply_migration_defaults, PAYWALL_MESSAGE)
+                      apply_migration_defaults, PAYWALL_MESSAGE,
+                      activate_subscription, revoke_subscription,
+                      is_trial_active, days_left_trial, MAX_QUESTIONS_PER_WEEK)
 from competition import generate_challenge_code, verify_liveness_response
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime, time as dtime
@@ -367,18 +369,31 @@ async def send(msg,txt):
 #  HANDLERS
 # ════════════════════════════════════
 async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh();uid=str(upd.effective_user.id)
-    h[uid]=gu(h,upd.effective_user.id)
-    h[uid]["state"]=S_NAME;h[uid]["msgs"]=[]
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    # Handle referral link: /start REF_12345
+    args = ctx.args
+    if args and args[0].startswith("REF_"):
+        ref_code = args[0]
+        referrer_uid = None
+        for ruid, ru in h.items():
+            if ru.get("ref_code") == ref_code and ruid != str(uid):
+                referrer_uid = ruid
+                break
+        if referrer_uid and not u.get("ref_by"):
+            u["ref_by"] = referrer_uid
+            u["discount_pct"] = 50
+            h[referrer_uid]["ref_count"] = h[referrer_uid].get("ref_count",0) + 1
+            h[referrer_uid]["discount_pct"] = 50
+            try:
+                await ctx.bot.send_message(int(referrer_uid),
+                    "🎉 Друг зарегистрировался по твоей ссылке!\n"
+                    "Твоя скидка 50% активирована — используй /subscribe.")
+            except Exception as e:
+                log.warning(f"ref notify fail: {e}")
+    h[str(uid)]["state"]=S_NAME
+    h[str(uid)]["msgs"]=[]
     sh(h)
-    await upd.message.reply_text(
-        "Привет.\nЯ твой персональный помощник по программе 'Чистая кожа'.\n\n"
-        "Я помогу понять что влияет на кожу, выстроить уход и пройти маршрут шаг за шагом.\n\n"
-        "Каждое фото проходит 8-ступенчатый анализ:\n"
-        "  👁 Описание кожи\n  🔬 Диагностика с вероятностями\n"
-        "  ❓ Уточняющие вопросы\n  ⚠️ Оценка рисков\n"
-        "  📋 Персональные рекомендации\n  🛡️ Проверка безопасности\n\n"
-        "Для начала — как тебя зовут?")
+    await upd.message.reply_text("Привет! Я SkinCoach — твой персональный ИИ-коуч по коже.\nКак тебя зовут?")
 
 async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
@@ -779,22 +794,26 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     sh(h)
 
 async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh();u=gu(h,upd.effective_user.id)
-    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
-    wt=WEEKS.get(u["week"],"Программа");pct=int((u["day"]/28)*100)
-    bar="▓"*(pct//10)+"░"*(10-pct//10)
-    diag=u.get("diagnosis","не определено")
-    reason=u.get("reasoning_data",{})
-    hyps=reason.get("hypotheses",[])
-    diag_info=""
-    if hyps:
-        diag_info="\n\nДиагноз:\n"
-        for hp in hyps[:3]:
-            diag_info+=f"  {hp.get('diagnosis','?')} — {hp.get('probability',0)}%\n"
-    await upd.message.reply_text(
-        f"📊 {u.get('name','')}{diag_info}\n"
-        f"День {u['day']}/28\nНеделя {u['week']}/4 — {wt}\n[{bar}] {pct}%\n\n"
-        f"/next — следующий день\n📸 Фото — повторный анализ")
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    lines = []
+    if is_trial_active(u):
+        d = days_left_trial(u)
+        lines.append(f"⏳ Пробный период: осталось {d} дн.")
+    elif u.get("subscription") == "paid" and u.get("paid_until"):
+        lines.append(f"✅ Подписка активна до: {u['paid_until']}")
+    else:
+        used = u.get("questions_this_week", 0)
+        left = max(0, MAX_QUESTIONS_PER_WEEK - used)
+        lines.append(f"🔒 Подписка не активна")
+        lines.append(f"💬 Вопросов осталось на этой неделе: {left}/3")
+        lines.append(f"👉 /subscribe — оформить подписку")
+    diag = u.get("diagnosis","не определено")
+    day = u.get("day",0)
+    lines.append(f"\n📋 Диагноз: {diag}")
+    lines.append(f"📅 День программы: {day}/28")
+    if u.get("skin_score_last"):
+        lines.append(f"📊 Последняя оценка: {u['skin_score_last']}%")
+    await upd.message.reply_text("\n".join(lines))
 
 async def cmd_achievements(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
@@ -955,6 +974,84 @@ async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
             log.warning(f"Reengagement {uid}: {e}")
     if changed: sh(h)
 
+async def cmd_subscribe(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    price = 490
+    if u.get("discount_pct",0) > 0:
+        disc = u["discount_pct"]
+        final = int(price * (1 - disc/100))
+        price_line = f"💰 Цена: {final}₽/мес (скидка {disc}% активирована!)"
+    else:
+        price_line = f"💰 Цена: {price}₽/мес"
+    pay_details = os.getenv("PAYMENT_DETAILS","Реквизиты не настроены — напиши администратору")
+    msg = (
+        f"📋 Подписка SkinCoach\n\n"
+        f"{price_line}\n\n"
+        f"Что входит:\n"
+        f"✅ Полный анализ кожи\n"
+        f"✅ 28-дневная программа\n"
+        f"✅ Безлимитный чат\n"
+        f"✅ Питание, уход, психосоматика\n\n"
+        f"💳 Реквизиты для оплаты:\n{pay_details}\n\n"
+        f"После оплаты пришли скриншот сюда — активирую доступ в течение часа."
+    )
+    await upd.message.reply_text(msg)
+
+async def cmd_grant(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    admin_id = os.getenv("ADMIN_ID","").strip()
+    if not admin_id or str(upd.effective_user.id) != admin_id:
+        return
+    args=ctx.args
+    if not args:
+        await upd.message.reply_text("Usage: /grant <user_id> [days]"); return
+    target_uid=args[0]
+    days=int(args[1]) if len(args)>1 else 30
+    h=lh()
+    if target_uid not in h:
+        await upd.message.reply_text(f"User {target_uid} not found"); return
+    disc = h[target_uid].get("discount_pct",0)
+    activate_subscription(h[target_uid], days=days, discount_pct=disc)
+    sh(h)
+    await upd.message.reply_text(f"✅ Подписка активирована для {target_uid} на {days} дней")
+    try:
+        await ctx.bot.send_message(int(target_uid),
+            f"🎉 Твоя подписка активирована на {days} дней!\n"
+            f"Теперь у тебя полный доступ. Пришли фото — начнём программу.")
+    except Exception as e:
+        log.warning(f"Could not notify user {target_uid}: {e}")
+
+async def cmd_revoke(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    admin_id = os.getenv("ADMIN_ID","").strip()
+    if not admin_id or str(upd.effective_user.id) != admin_id:
+        return
+    args=ctx.args
+    if not args:
+        await upd.message.reply_text("Usage: /revoke <user_id>"); return
+    target_uid=args[0]
+    h=lh()
+    if target_uid not in h:
+        await upd.message.reply_text(f"User {target_uid} not found"); return
+    revoke_subscription(h[target_uid])
+    sh(h)
+    await upd.message.reply_text(f"✅ Подписка отозвана у {target_uid}")
+
+async def cmd_ref(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    # Generate ref_code if not set
+    if not u.get("ref_code"):
+        u["ref_code"] = f"REF_{uid}"
+        sh(h)
+    bot_username = (await ctx.bot.get_me()).username
+    ref_code = u["ref_code"]
+    link = f"https://t.me/{bot_username}?start={ref_code}"
+    msg = (
+        f"🎁 Твоя реферальная ссылка:\n{link}\n\n"
+        f"Поделись с другом — вы оба получите скидку 50% на первый месяц.\n"
+        f"То есть всего 245₽ вместо 490₽!\n\n"
+        f"Твоих приглашений: {u.get('ref_count',0)}"
+    )
+    await upd.message.reply_text(msg)
+
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
@@ -971,6 +1068,9 @@ def main():
             BotCommand("labs","🔬 Анализы — ввести или обновить"),
             BotCommand("compete","🏆 Участвовать в рейтинге кожи"),
             BotCommand("skinrank","🥇 Рейтинг кожи"),
+            BotCommand("face","✨ Оценка кожи лица"),
+            BotCommand("subscribe","💳 Оформить подписку"),
+            BotCommand("ref","🎁 Пригласить друга"),
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
@@ -994,6 +1094,10 @@ def main():
     app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
     app.add_handler(CommandHandler("compete",cmd_compete))
     app.add_handler(CommandHandler("skinrank",cmd_skinrank))
+    app.add_handler(CommandHandler("subscribe",cmd_subscribe))
+    app.add_handler(CommandHandler("grant",cmd_grant))
+    app.add_handler(CommandHandler("revoke",cmd_revoke))
+    app.add_handler(CommandHandler("ref",cmd_ref))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
