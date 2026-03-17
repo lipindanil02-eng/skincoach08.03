@@ -1077,6 +1077,154 @@ async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
     if changed: sh(h)
 
 
+async def cmd_profile(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
+    lines = []
+    if is_trial_active(u):
+        d = days_left_trial(u)
+        lines.append(f"⏳ Пробный период: осталось {d} дн.")
+    elif u.get("subscription") == "paid" and u.get("paid_until"):
+        lines.append(f"✅ Подписка активна до: {u['paid_until']}")
+    else:
+        used = u.get("questions_this_week", 0)
+        left = max(0, MAX_QUESTIONS_PER_WEEK - used)
+        lines.append(f"🔒 Подписка не активна · вопросов: {left}/3")
+    diag = u.get("diagnosis", "не определено")
+    day = u.get("day", 0)
+    lines.append(f"📋 Диагноз: {diag}")
+    lines.append(f"📅 День программы: {day}/28")
+    if u.get("skin_score_last"):
+        lines.append(f"📊 Последняя оценка: {u['skin_score_last']}%")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➡️ Следующий день", callback_data="menu:next"),
+         InlineKeyboardButton("🏆 Достижения", callback_data="menu:achievements")],
+        [InlineKeyboardButton("🔬 Анализы", callback_data="menu:labs")],
+    ])
+    await upd.message.reply_text("\n".join(lines), reply_markup=kb)
+
+
+async def cmd_settings(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
+    notify_status = "вкл ✅" if u.get("notify_daily") else "выкл ❌"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Оформить подписку", callback_data="menu:subscribe")],
+        [InlineKeyboardButton(f"🔔 Напоминания ({notify_status})", callback_data="menu:notify"),
+         InlineKeyboardButton("🎁 Пригласить друга", callback_data="menu:ref")],
+        [InlineKeyboardButton("👥 Бонус за группу", callback_data="menu:bonus")],
+    ])
+    await upd.message.reply_text("⚙️ Настройки", reply_markup=kb)
+
+
+async def cmd_rank(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🥇 Рейтинг кожи", callback_data="menu:skinrank"),
+         InlineKeyboardButton("📊 Топ участников", callback_data="menu:leaderboard")],
+        [InlineKeyboardButton("🏆 Участвовать", callback_data="menu:compete")],
+    ])
+    await upd.message.reply_text("🏆 Рейтинги", reply_markup=kb)
+
+
+async def handle_menu_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = upd.callback_query
+    await q.answer()
+    action = q.data.split(":", 1)[1]
+    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
+    msg = q.message  # use callback message for replies
+    if action == "next":
+        # Inline version of cmd_next
+        if not is_access_allowed(u):
+            await msg.reply_text(PAYWALL_MESSAGE); return
+        if u.get("state") != S_ACTIVE:
+            await msg.reply_text("Сначала пришли фото кожи 📸"); return
+        if u.get("day", 0) >= 28:
+            await msg.reply_text("Программа завершена! 🎉"); return
+        st = await msg.reply_text("Генерирую план следующего дня... ⏳")
+        u["day"] = u.get("day", 0) + 1
+        diw = ((u["day"] - 1) % 7) + 1
+        if diw == 1 and u["day"] > 1:
+            u["week"] = u.get("week", 1) + 1
+        sh(h)
+        try: reply = await pipeline_final(u, "")
+        except Exception as e: reply = "Ошибка. Попробуй позже."; log.error(f"Next:{e}")
+        try: await st.delete()
+        except: pass
+        try:
+            parsed = json.loads(reply) if isinstance(reply, str) and reply.strip().startswith("{") else None
+            if isinstance(parsed, dict) and "msg1" in parsed:
+                await send(msg, parsed["msg1"])
+                if parsed.get("msg2"): await asyncio.sleep(0.5); await send(msg, parsed["msg2"])
+                if parsed.get("msg3"): await asyncio.sleep(0.5); await send(msg, parsed["msg3"])
+            else:
+                await send(msg, reply)
+        except Exception: await send(msg, reply)
+    elif action == "achievements":
+        await msg.reply_text(format_achievements(u))
+    elif action == "labs":
+        if u["state"] in (S_NAME, S_DUR, S_TRIED, S_PHOTO, S_QUESTIONS):
+            await msg.reply_text("Сначала заверши диагностику 📸"); return
+        labs_msg = format_labs_message(u.get("diagnosis", ""))
+        u["state"] = S_LABS; sh(h)
+        await msg.reply_text(labs_msg)
+    elif action == "subscribe":
+        price = 490
+        if u.get("discount_pct", 0) > 0:
+            disc = u["discount_pct"]
+            final = int(price * (1 - disc / 100))
+            price_line = f"💰 Цена: {final}₽/мес (скидка {disc}% активирована!)"
+        else:
+            price_line = f"💰 Цена: {price}₽/мес"
+        pay_details = os.getenv("PAYMENT_DETAILS", "Реквизиты не настроены — напиши администратору")
+        await msg.reply_text(
+            f"📋 Подписка SkinCoach\n\n{price_line}\n\n"
+            f"✅ Полный анализ · 28-дневная программа · Безлимитный чат\n\n"
+            f"💳 {pay_details}\n\nПосле оплаты пришли скриншот — активирую в течение часа."
+        )
+    elif action == "notify":
+        if u.get("notify_daily"):
+            u["notify_daily"] = False; sh(h)
+            await msg.reply_text("🔕 Ежедневные напоминания отключены.")
+        else:
+            await ask_notify_preference(msg)
+    elif action == "ref":
+        bot_username = (await ctx.bot.get_me()).username
+        ref_code = u.get("ref_code") or f"REF_{uid}"
+        u["ref_code"] = ref_code; sh(h)
+        link = f"https://t.me/{bot_username}?start={ref_code}"
+        await msg.reply_text(
+            f"🎁 Твоя реферальная ссылка:\n{link}\n\n"
+            f"Поделись с другом — вы оба получите скидку 50%!\n"
+            f"Твоих приглашений: {u.get('ref_count', 0)}"
+        )
+    elif action == "bonus":
+        if u.get("group_bonus_claimed"):
+            await msg.reply_text("Ты уже получил бонус за вступление в группу 👥"); return
+        GROUP = os.getenv("COMMUNITY_GROUP", "@skincoach_community")
+        try:
+            member = await ctx.bot.get_chat_member(chat_id=GROUP, user_id=uid)
+            if member.status in ("member", "administrator", "creator", "restricted"):
+                u["group_member"] = True; u["group_bonus_claimed"] = True
+                u, notifs = add_points(u, POINTS["group_join"])
+                u, badge_msg = award_badge(u, "group_member")
+                from datetime import timedelta
+                ts = u.get("trial_start", datetime.now().isoformat())
+                u["trial_start"] = (datetime.fromisoformat(ts) - timedelta(days=7)).isoformat()
+                sh(h)
+                reply_msg = "✅ Ты в группе! +7 дней к пробному периоду, +50 очков"
+                if badge_msg: reply_msg += badge_msg
+                await msg.reply_text(reply_msg)
+            else:
+                raise Exception("not member")
+        except:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("👥 Вступить в группу", url=f"https://t.me/{GROUP.lstrip('@')}")]])
+            await msg.reply_text("Вступи в группу SkinCoach — получи +7 дней бесплатно!\n\nПосле вступления зайди в /settings → Бонус.", reply_markup=kb)
+    elif action == "skinrank":
+        await msg.reply_text(format_skinrank(h, viewer_uid=str(uid)))
+    elif action == "leaderboard":
+        await msg.reply_text(format_leaderboard(h))
+    elif action == "compete":
+        await cmd_compete(upd, ctx)
+
+
 async def ask_notify_preference(message) -> None:
     """Отправить вопрос об ежедневных напоминаниях с inline-кнопками."""
     kb = InlineKeyboardMarkup([[
@@ -1300,17 +1448,10 @@ def main():
             BotCommand("start","🔄 Начать заново / регистрация"),
             BotCommand("help","ℹ️ Справка по боту"),
             BotCommand("status","📊 Мой прогресс и диагноз"),
-            BotCommand("next","➡️ Следующий день программы"),
-            BotCommand("achievements","🏆 Мои бейджи и очки"),
-            BotCommand("leaderboard","🥇 Топ участников"),
-            BotCommand("bonus","🎁 Бонус за вступление в группу"),
-            BotCommand("labs","🔬 Анализы — ввести или обновить"),
-            BotCommand("compete","🏆 Участвовать в рейтинге кожи"),
-            BotCommand("skinrank","🥇 Рейтинг кожи"),
             BotCommand("face","✨ Оценка кожи лица"),
-            BotCommand("notify","🔔 Ежедневные напоминания вкл/выкл"),
-            BotCommand("subscribe","💳 Оформить подписку"),
-            BotCommand("ref","🎁 Пригласить друга"),
+            BotCommand("profile","👤 Мой профиль и прогресс"),
+            BotCommand("settings","⚙️ Подписка и настройки"),
+            BotCommand("rank","🏆 Рейтинги"),
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
@@ -1326,6 +1467,11 @@ def main():
     app=ApplicationBuilder().token(TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
+    app.add_handler(CommandHandler("face",cmd_face))
+    app.add_handler(CommandHandler("profile",cmd_profile))
+    app.add_handler(CommandHandler("settings",cmd_settings))
+    app.add_handler(CommandHandler("rank",cmd_rank))
+    # Hidden commands (still work if typed directly)
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("achievements",cmd_achievements))
@@ -1338,8 +1484,8 @@ def main():
     app.add_handler(CommandHandler("grant",cmd_grant))
     app.add_handler(CommandHandler("revoke",cmd_revoke))
     app.add_handler(CommandHandler("ref",cmd_ref))
-    app.add_handler(CommandHandler("face",cmd_face))
     app.add_handler(CommandHandler("notify",cmd_notify))
+    app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern="^menu:"))
     app.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify:"))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
