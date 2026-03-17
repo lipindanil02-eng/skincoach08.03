@@ -447,7 +447,21 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["msgs"]=tm(u["msgs"])
         try: await st.delete()
         except: pass
-        await send(upd.message,reply)
+        # Try to parse 3-part JSON response
+        try:
+            parsed = json.loads(reply) if isinstance(reply,str) and reply.strip().startswith("{") else None
+            if isinstance(parsed, dict) and "msg1" in parsed:
+                await send(upd.message, parsed["msg1"])
+                if parsed.get("msg2"):
+                    await asyncio.sleep(0.5)
+                    await send(upd.message, parsed["msg2"])
+                if parsed.get("msg3"):
+                    await asyncio.sleep(0.5)
+                    await send(upd.message, parsed["msg3"])
+            else:
+                await send(upd.message, reply)
+        except Exception:
+            await send(upd.message, reply)
         # Offer lab tests after diagnosis
         labs_msg=format_labs_message(u.get("diagnosis",""))
         u["state"]=S_LABS;sh(h)
@@ -721,7 +735,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u=on_compete_photo(u,skin_sc,has_makeup)
         u["state"]=S_ACTIVE
         t=skin_sc.get("total",0)
-        score_line=(f"\n\n✅ Результат засчитан в рейтинг!\n📊 Оценка: {t}/100"
+        score_line=(f"\n\n✅ Результат засчитан в рейтинг!\n📊 {score_bar(t)} {t}%"
                     f"{' (с макияжем)' if has_makeup else ' (без макияжа)'}\n/skinrank — посмотреть рейтинг")
     elif is_compete_photo and (not skin_sc or skin_sc.get("total") is None):
         u["state"]=S_ACTIVE
@@ -732,7 +746,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         t=skin_sc.get("total",0)
         makeup_note=" (с макияжем)" if has_makeup else " (без макияжа)"
         age_note=f" · Визуальный возраст: {visual_age}" if visual_age else ""
-        score_line=f"\n\n📊 Оценка кожи: {t}/100{makeup_note}{age_note}\n/compete — участвовать в рейтинге"
+        score_line=f"\n\n📊 {score_bar(t)} {t}%{makeup_note}{age_note}\n/compete — участвовать в рейтинге"
 
     sh(h)
     msg=intro+diag_text+q_text+score_line
@@ -748,7 +762,21 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"])
         try: await st2.delete()
         except: pass
-        await send(upd.message,reply)
+        # Try to parse 3-part JSON response
+        try:
+            parsed = json.loads(reply) if isinstance(reply,str) and reply.strip().startswith("{") else None
+            if isinstance(parsed, dict) and "msg1" in parsed:
+                await send(upd.message, parsed["msg1"])
+                if parsed.get("msg2"):
+                    await asyncio.sleep(0.5)
+                    await send(upd.message, parsed["msg2"])
+                if parsed.get("msg3"):
+                    await asyncio.sleep(0.5)
+                    await send(upd.message, parsed["msg3"])
+            else:
+                await send(upd.message, reply)
+        except Exception:
+            await send(upd.message, reply)
         # Offer lab tests after diagnosis
         labs_msg=format_labs_message(u.get("diagnosis",""))
         u["state"]=S_LABS;sh(h)
