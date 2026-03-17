@@ -115,7 +115,15 @@ def _reset_week_if_needed(u: dict) -> None:
 
 def activate_subscription(u: dict, days: int = 30, discount_pct: int = 0) -> None:
     today = datetime.utcnow().date()
-    paid_until = (today + timedelta(days=days)).isoformat()
+    current_until = u.get("paid_until")
+    if current_until and u.get("subscription") == "paid":
+        try:
+            base = max(today, datetime.fromisoformat(current_until).date())
+        except Exception:
+            base = today
+    else:
+        base = today
+    paid_until = (base + timedelta(days=days)).isoformat()
     u["subscription"] = "paid"
     u["paid_until"] = paid_until
     u["discount_pct"] = 0  # consume discount after activation
