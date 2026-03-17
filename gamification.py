@@ -396,7 +396,7 @@ def format_skinrank(all_users: dict, viewer_uid: str) -> str:
         lines = [f"{label}:"]
         for i, (score, _, name) in enumerate(top):
             medal = medals[i] if i < 3 else f"{i+1}."
-            lines.append(f"{medal} {name} — {score}")
+            lines.append(f"{medal} {name} — {score}%")
         return lines
 
     viewer = all_users.get(str(viewer_uid), {})
