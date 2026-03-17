@@ -2,7 +2,7 @@
 gamification.py — Система очков, уровней, бейджей и стриков для SkinCoach
 Octalysis-based motivation framework
 """
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 # ─── Уровни ────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,21 @@ POINTS = {
 # ─── Helpers ───────────────────────────────────────────────────────────────
 
 def _today() -> str:
-    return date.today().isoformat()
+    """UTC date string YYYY-MM-DD."""
+    return datetime.utcnow().date().isoformat()
+
+
+def get_weekly_key() -> str:
+    """Return ISO 8601 week key, e.g. '2026-W11'. Always UTC."""
+    return datetime.utcnow().strftime("%G-W%V")
+
+
+def can_compete_today(u: dict) -> bool:
+    """Return True if user already submitted a verified competition photo today (UTC)."""
+    compete_date = u.get("compete_date")
+    if compete_date is None:
+        return False
+    return compete_date == datetime.utcnow().date().isoformat()
 
 def ensure_fields(u: dict) -> dict:
     """Добавить недостающие поля геймификации к существующему юзеру."""
@@ -56,6 +70,15 @@ def ensure_fields(u: dict) -> dict:
         "group_bonus_claimed": False,
         "quality_bonus_today": False,
         "detailed_streak": 0,
+        "skin_score_last": None,
+        "skin_score_components": None,
+        "skin_score_history": [],
+        "best_score_natural": None,
+        "best_score_makeup": None,
+        "compete_date": None,
+        "challenge_code": None,
+        "challenge_date": None,
+        "compete_retry_count": 0,
     }
     for k, v in defaults.items():
         if k not in u:
@@ -284,4 +307,132 @@ def format_leaderboard(all_users: dict) -> str:
         medal = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{medal} {name} — 🔥{streak} дн. / ⭐{pts} очков")
 
+    return "\n".join(lines)
+
+
+def on_regular_photo_score(u: dict, score_components: dict, has_makeup: bool) -> dict:
+    """Called after every photo analysis. Stores unverified skin score entry."""
+    u = ensure_fields(u)
+    total = score_components.get("total") if score_components else None
+    if total is None:
+        return u
+    u["skin_score_last"] = total
+    u["skin_score_components"] = score_components
+    entry = {"date": _today(), "score": total, "has_makeup": has_makeup, "verified": False, "components": score_components}
+    u["skin_score_history"].append(entry)
+    if len(u["skin_score_history"]) > 30:
+        u["skin_score_history"] = u["skin_score_history"][-30:]
+    return u
+
+
+def on_compete_photo(u: dict, score_components: dict, has_makeup: bool) -> dict:
+    """Called after a verified competition photo. Stores verified entry, updates best scores."""
+    u = ensure_fields(u)
+    total = score_components.get("total") if score_components else None
+    if total is None:
+        return u
+    u["skin_score_last"] = total
+    u["skin_score_components"] = score_components
+    u["compete_date"] = datetime.utcnow().date().isoformat()
+    entry = {"date": _today(), "score": total, "has_makeup": has_makeup, "verified": True, "components": score_components}
+    u["skin_score_history"].append(entry)
+    if len(u["skin_score_history"]) > 30:
+        u["skin_score_history"] = u["skin_score_history"][-30:]
+    if has_makeup:
+        if u["best_score_makeup"] is None or total > u["best_score_makeup"]:
+            u["best_score_makeup"] = total
+    else:
+        if u["best_score_natural"] is None or total > u["best_score_natural"]:
+            u["best_score_natural"] = total
+    return u
+
+
+def format_skinrank(all_users: dict, viewer_uid: str) -> str:
+    """Format /skinrank leaderboard: 4 sections (natural/makeup × week/alltime)."""
+    current_week = get_weekly_key()
+    medals = ["🥇", "🥈", "🥉"]
+
+    week_natural = {}
+    week_makeup = {}
+    alltime_natural = {}
+    alltime_makeup = {}
+
+    def _better(current, new_score, new_date):
+        if current is None:
+            return True
+        if new_score > current[0]:
+            return True
+        if new_score == current[0] and new_date < current[1]:
+            return True
+        return False
+
+    for uid, u in all_users.items():
+        name = u.get("name") or "Аноним"
+        for entry in u.get("skin_score_history", []):
+            if not entry.get("verified"):
+                continue
+            score = entry.get("score", 0)
+            edate = entry.get("date", "")
+            makeup = entry.get("has_makeup", False)
+            try:
+                entry_week = date.fromisoformat(edate).strftime("%G-W%V")
+            except Exception:
+                entry_week = ""
+            if makeup:
+                if _better(alltime_makeup.get(uid), score, edate):
+                    alltime_makeup[uid] = (score, edate, name)
+                if entry_week == current_week and _better(week_makeup.get(uid), score, edate):
+                    week_makeup[uid] = (score, edate, name)
+            else:
+                if _better(alltime_natural.get(uid), score, edate):
+                    alltime_natural[uid] = (score, edate, name)
+                if entry_week == current_week and _better(week_natural.get(uid), score, edate):
+                    week_natural[uid] = (score, edate, name)
+
+    def _render_top(data: dict, label: str) -> list:
+        top = sorted(data.values(), key=lambda x: (-x[0], x[1]))[:10]
+        if not top:
+            return [f"{label}: пока нет участников"]
+        lines = [f"{label}:"]
+        for i, (score, _, name) in enumerate(top):
+            medal = medals[i] if i < 3 else f"{i+1}."
+            lines.append(f"{medal} {name} — {score}")
+        return lines
+
+    viewer = all_users.get(str(viewer_uid), {})
+    has_any = any([week_natural, week_makeup, alltime_natural, alltime_makeup])
+    if not has_any:
+        best_nat = viewer.get("best_score_natural")
+        best_mak = viewer.get("best_score_makeup")
+        if best_nat is not None or best_mak is not None:
+            nat_str = str(best_nat) if best_nat is not None else "—"
+            mak_str = str(best_mak) if best_mak is not None else "—"
+            return (f"🏆 Рейтинг кожи пока пуст — стань первым!\n\n"
+                    f"Твой лучший: {nat_str} (без макияжа) | {mak_str} (с макияжем)\n"
+                    "📸 /compete — участвовать сегодня")
+        return "🏆 Рейтинг кожи пока пуст — попробуй /compete первым!"
+
+    lines = ["🏆 РЕЙТИНГ КОЖИ", ""]
+    lines.append("─── БЕЗ МАКИЯЖА ───────────────")
+    lines.extend(_render_top(week_natural, "Эта неделя"))
+    lines.append("")
+    lines.extend(_render_top(alltime_natural, "Всё время"))
+    lines.append("")
+    lines.append("─── С МАКИЯЖЕМ ──────────────────")
+    lines.extend(_render_top(week_makeup, "Эта неделя"))
+    lines.append("")
+    lines.extend(_render_top(alltime_makeup, "Всё время"))
+    lines.append("")
+    lines.append("───────────────────────────────")
+    best_nat = viewer.get("best_score_natural")
+    best_mak = viewer.get("best_score_makeup")
+    if best_nat is not None or best_mak is not None:
+        nat_str = str(best_nat) if best_nat is not None else "—"
+        mak_str = str(best_mak) if best_mak is not None else "—"
+        lines.append(f"Твой лучший: {nat_str} (без макияжа) | {mak_str} (с макияжем)")
+    else:
+        lines.append("Ты ещё не участвовал — попробуй /compete!")
+
+    lines.append("📸 /compete — участвовать сегодня")
+    lines.append("👉 /leaderboard — рейтинг по очкам и стрику")
     return "\n".join(lines)

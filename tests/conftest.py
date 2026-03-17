@@ -16,7 +16,6 @@ _MOCKED = [
     "cryptography.hazmat.primitives.asymmetric.padding",
     "telegram", "telegram.ext", "telegram.constants",
     "inference",
-    "gamification",
 ]
 
 for mod in _MOCKED:
