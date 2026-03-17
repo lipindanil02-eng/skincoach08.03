@@ -14,6 +14,8 @@ from gamification import (ensure_fields, on_first_photo, update_streak,
     format_achievements, format_leaderboard, format_skinrank,
     on_regular_photo_score, on_compete_photo, can_compete_today,
     add_points, award_badge, POINTS)
+from payments import (is_access_allowed, can_ask_question, use_question,
+                      apply_migration_defaults, PAYWALL_MESSAGE)
 from competition import generate_challenge_code, verify_liveness_response
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime, time as dtime
@@ -169,6 +171,7 @@ def gu(h,uid):
     # Migration for existing users (ensure_fields doesn't know about labs fields)
     if "labs_raw" not in h[u]: h[u]["labs_raw"]=None
     if "labs_submitted_at" not in h[u]: h[u]["labs_submitted_at"]=None
+    apply_migration_defaults(h[u])
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
@@ -458,6 +461,18 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     # Active program - chat
     if u["state"]==S_ACTIVE:
+        # Free users after trial: 3 questions/week limit
+        if not is_access_allowed(u):
+            if not can_ask_question(u):
+                await upd.message.reply_text(
+                    "💬 Ты использовал 3 вопроса на этой неделе.\n"
+                    "Безлимитный чат — в подписке.\n\n"
+                    + PAYWALL_MESSAGE
+                )
+                sh(h)
+                return
+            use_question(u)
+            sh(h)
         u["msgs"].append({"role":"user","content":txt});u["msgs"]=tm(u["msgs"])
         wt=WEEKS.get(u["week"],"Программа")
         diag=(u.get("diagnosis") or "не определено")[:200]
@@ -546,6 +561,11 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         sh(h)
         await upd.message.reply_text(f"Прочитал анализы:\n{u['labs_raw']}\n\nИнтерпретирую... ⏳")
         await interpret_labs(u,upd.message)
+        return
+
+    # Access gate — not for face photos (S_FACE handled separately)
+    if u.get("state") != "face" and not is_access_allowed(u):
+        await upd.message.reply_text(PAYWALL_MESSAGE)
         return
 
     st=await upd.message.reply_text(
@@ -705,6 +725,9 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
     if u["state"] not in (S_ACTIVE,S_LABS): await upd.message.reply_text("/start"); return
+    if not is_access_allowed(u):
+        await upd.message.reply_text(PAYWALL_MESSAGE)
+        return
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
