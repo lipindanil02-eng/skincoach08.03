@@ -11,7 +11,10 @@ except Exception as _inf_err:
     import logging as _l; _l.getLogger("skincoach").warning(f"inference not available: {_inf_err}")
 from gamification import (ensure_fields, on_first_photo, update_streak,
     on_program_complete, on_referral_success, on_detailed_answer,
-    format_achievements, format_leaderboard, add_points, award_badge, POINTS)
+    format_achievements, format_leaderboard, format_skinrank,
+    on_regular_photo_score, on_compete_photo, can_compete_today,
+    add_points, award_badge, POINTS)
+from competition import generate_challenge_code, verify_liveness_response
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime, time as dtime
 from pathlib import Path
@@ -40,6 +43,7 @@ log=logging.getLogger("skincoach")
 # States
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
 S_LABS="labs"
+S_COMPETE="compete"
 
 # Labs — списки анализов
 LABS_BASE=[
@@ -445,6 +449,13 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             "Пришли фото бланка, напиши значения (D=18, цинк=7) или напиши пропустить")
         return
 
+    if u["state"]==S_COMPETE:
+        code=u.get("challenge_code","????")
+        await upd.message.reply_text(
+            f"Жду фото с кодом {code} на бумажке. "
+            "Отправь фото или напиши /start чтобы выйти.")
+        sh(h); return
+
     # Active program - chat
     if u["state"]==S_ACTIVE:
         u["msgs"].append({"role":"user","content":txt});u["msgs"]=tm(u["msgs"])
@@ -486,8 +497,26 @@ async def interpret_labs(u, msg):
         reply="Не удалось интерпретировать анализы. Попробуй позже или задай вопрос текстом."
     await send(msg,reply)
 
+async def check_liveness(b64: str, code: str) -> bool:
+    """Call vision model to verify challenge code is visible in photo."""
+    prompt = (f'Is the handwritten number {code} visible on paper or a hand in this photo? '
+              f'Reply JSON only: {{"code_visible": true}}  or  {{"code_visible": false}}')
+    try:
+        raw = await call_raw(
+            [{"role":"system","content":"You verify if a specific number is handwritten in a photo."},
+             {"role":"user","content":[
+                 {"type":"text","text":prompt},
+                 {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
+             ]}],
+            VISION_M, VIS_FB, mt=100)
+        return verify_liveness_response(raw, code)
+    except Exception as e:
+        log.warning(f"Liveness check failed: {e}")
+        return False
+
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    is_compete_photo=(u["state"]==S_COMPETE)
     if u["state"] in (S_NAME,S_DUR,S_TRIED):
         await upd.message.reply_text("Сначала познакомимся. /start"); return
 
@@ -548,6 +577,28 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         else:
             u["local_model_result"] = None
 
+        # Competition liveness check
+        if u["state"]==S_COMPETE:
+            code=u.get("challenge_code","????")
+            code_ok=await check_liveness(b64,code)
+            if not code_ok:
+                retries=u.get("compete_retry_count",0)+1
+                u["compete_retry_count"]=retries
+                if retries>=3:
+                    u["state"]=S_ACTIVE
+                    sh(h)
+                    try: await st.delete()
+                    except: pass
+                    await upd.message.reply_text("Превышен лимит попыток. Попробуй /compete завтра.")
+                else:
+                    sh(h)
+                    try: await st.delete()
+                    except: pass
+                    await upd.message.reply_text(
+                        f"Код не найден. Убедись что цифры {code} видны на бумаге "
+                        f"рядом с кожей. Попытка {retries}/3.")
+                return
+
         cap=(upd.message.caption or "").strip()
         u["photo_b64"]=b64[:100]
         u["last_active"]=datetime.now().isoformat()
@@ -598,14 +649,41 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["state"]=S_ACTIVE
         if u["day"]==0: u["day"]=1;u["week"]=1
 
+    # Extract skin score from vision data
+    vis=u.get("vision_data") or {}
+    skin_sc=vis.get("skin_score") if isinstance(vis,dict) else None
+    has_makeup=vis.get("has_makeup",False) if isinstance(vis,dict) else False
+    visual_age=vis.get("visual_age") if isinstance(vis,dict) else None
+    if skin_sc and skin_sc.get("total") is not None:
+        u=on_regular_photo_score(u,skin_sc,has_makeup)
+
     # Gamification: первое фото
     gam_msgs = []
     if is_first_photo and result_type not in ("error", "ask_reshoot"):
         u, notifs = on_first_photo(u)
         gam_msgs.extend(notifs)
 
+    # Competition result
+    score_line=""
+    if is_compete_photo and skin_sc and skin_sc.get("total") is not None:
+        u=on_compete_photo(u,skin_sc,has_makeup)
+        u["state"]=S_ACTIVE
+        t=skin_sc.get("total",0)
+        score_line=(f"\n\n✅ Результат засчитан в рейтинг!\n📊 Оценка: {t}/100"
+                    f"{' (с макияжем)' if has_makeup else ' (без макияжа)'}\n/skinrank — посмотреть рейтинг")
+    elif is_compete_photo and (not skin_sc or skin_sc.get("total") is None):
+        u["state"]=S_ACTIVE
+        sh(h)
+        await upd.message.reply_text("Фото не подходит для оценки. Попробуй ещё раз с хорошим освещением.")
+        return
+    elif skin_sc and skin_sc.get("total") is not None:
+        t=skin_sc.get("total",0)
+        makeup_note=" (с макияжем)" if has_makeup else " (без макияжа)"
+        age_note=f" · Визуальный возраст: {visual_age}" if visual_age else ""
+        score_line=f"\n\n📊 Оценка кожи: {t}/100{makeup_note}{age_note}\n/compete — участвовать в рейтинге"
+
     sh(h)
-    msg=intro+diag_text+q_text
+    msg=intro+diag_text+q_text+score_line
     if gam_msgs:
         msg += "\n" + "".join(gam_msgs)
     await send(upd.message,msg)
@@ -744,6 +822,35 @@ async def cmd_labs(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     u["state"]=S_LABS;sh(h)
     await upd.message.reply_text(labs_msg)
 
+async def cmd_compete(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();uid=upd.effective_user.id;u=gu(h,uid)
+    if u["state"] not in (S_ACTIVE,S_LABS,S_COMPETE):
+        await upd.message.reply_text("Сначала сделай анализ кожи — пришли фото 📸"); return
+    if can_compete_today(u):
+        best_nat=u.get("best_score_natural")
+        best_mak=u.get("best_score_makeup")
+        nat_str=str(best_nat) if best_nat is not None else "—"
+        mak_str=str(best_mak) if best_mak is not None else "—"
+        await upd.message.reply_text(
+            f"Ты уже участвовал сегодня!\n\n"
+            f"Твой лучший: {nat_str} (без макияжа) | {mak_str} (с макияжем)\n\n"
+            "Посмотри /skinrank для рейтинга."); return
+    code=generate_challenge_code()
+    u["challenge_code"]=code
+    u["challenge_date"]=datetime.utcnow().date().isoformat()
+    u["compete_retry_count"]=0
+    u["state"]=S_COMPETE
+    sh(h)
+    await upd.message.reply_text(
+        f"Для рейтинга напиши на бумажке:\n\n"
+        f"        {code}\n\n"
+        "и сфотографируй кожу рядом с ней 📸\n\n"
+        "Код должен быть чётко виден. Попытки: 3.")
+
+async def cmd_skinrank(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();uid=str(upd.effective_user.id)
+    await upd.message.reply_text(format_skinrank(h,viewer_uid=uid))
+
 async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
@@ -839,6 +946,8 @@ def main():
             BotCommand("leaderboard","🥇 Топ участников"),
             BotCommand("bonus","🎁 Бонус за вступление в группу"),
             BotCommand("labs","🔬 Анализы — ввести или обновить"),
+            BotCommand("compete","🏆 Участвовать в рейтинге кожи"),
+            BotCommand("skinrank","🥇 Рейтинг кожи"),
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
@@ -860,6 +969,8 @@ def main():
     app.add_handler(CommandHandler("bonus",cmd_bonus))
     app.add_handler(CommandHandler("labs",cmd_labs))
     app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
+    app.add_handler(CommandHandler("compete",cmd_compete))
+    app.add_handler(CommandHandler("skinrank",cmd_skinrank))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
