@@ -1447,7 +1447,6 @@ def main():
         await application.bot.set_my_commands([
             BotCommand("start","🔄 Начать заново / регистрация"),
             BotCommand("help","ℹ️ Справка по боту"),
-            BotCommand("status","📊 Мой прогресс и диагноз"),
             BotCommand("face","✨ Оценка кожи лица"),
             BotCommand("profile","👤 Мой профиль и прогресс"),
             BotCommand("settings","⚙️ Подписка и настройки"),
