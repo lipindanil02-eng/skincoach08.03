@@ -950,40 +950,92 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "/leaderboard — топ участников\n"
         "/start — заново")
 
-async def send_weekly_notifications(context: ContextTypes.DEFAULT_TYPE):
-    """Еженедельное утреннее уведомление для активных пользователей (раз в 7 дней)"""
+async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневное утреннее уведомление: день программы + предупреждения о конце триала/подписки"""
     h = lh()
     now = datetime.now()
     changed = False
     for uid, u in list(h.items()):
+        try: chat_id = int(uid)
+        except: continue
+        apply_migration_defaults(u)
+        name = u.get("name", "друг")
+
+        # --- Предупреждение: завтра заканчивается триал ---
+        if is_trial_active(u) and days_left_trial(u) == 1:
+            last_tw = u.get("last_trial_warn")
+            already_sent = False
+            if last_tw:
+                try:
+                    if (now - datetime.fromisoformat(last_tw)).total_seconds() < 20*3600:
+                        already_sent = True
+                except: pass
+            if not already_sent:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=(
+                        f"⏰ {name}, завтра заканчивается пробный период!\n\n"
+                        f"За 7 дней я узнал твою кожу и составил программу.\n"
+                        f"Чтобы продолжить — оформи подписку сегодня.\n\n"
+                        f"👉 /subscribe — 490₽/мес"
+                    ))
+                    u["last_trial_warn"] = now.isoformat()
+                    changed = True
+                    log.info(f"Trial warn → {uid}")
+                except Exception as e:
+                    log.warning(f"Trial warn {uid}: {e}")
+
+        # --- Предупреждение: через 2 дня заканчивается подписка ---
+        if u.get("subscription") == "paid" and u.get("paid_until"):
+            try:
+                from datetime import date as _date
+                days_left_sub = (datetime.fromisoformat(u["paid_until"]).date() - _date.today()).days
+                if days_left_sub == 2:
+                    last_sw = u.get("last_sub_warn")
+                    already_sent = False
+                    if last_sw:
+                        try:
+                            if (now - datetime.fromisoformat(last_sw)).total_seconds() < 20*3600:
+                                already_sent = True
+                        except: pass
+                    if not already_sent:
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=(
+                                f"⏰ {name}, подписка заканчивается через 2 дня ({u['paid_until']}).\n\n"
+                                f"Продли сейчас — не прерывай программу.\n\n"
+                                f"👉 /subscribe"
+                            ))
+                            u["last_sub_warn"] = now.isoformat()
+                            changed = True
+                            log.info(f"Sub warn → {uid}")
+                        except Exception as e:
+                            log.warning(f"Sub warn {uid}: {e}")
+            except: pass
+
+        # --- Ежедневное напоминание о программе ---
         if u.get("state") != S_ACTIVE: continue
         day = u.get("day", 0)
         if day == 0 or day > 28: continue
-        # Отправляем не чаще раза в 7 дней
-        last_notif = u.get("last_weekly_notify")
+        last_notif = u.get("last_daily_notify")
         if last_notif:
             try:
-                days_since = (now - datetime.fromisoformat(last_notif)).total_seconds() / 86400
-                if days_since < 7: continue
+                if (now - datetime.fromisoformat(last_notif)).total_seconds() < 23*3600:
+                    continue
             except: pass
-        try: chat_id = int(uid)
-        except: continue
         week = u.get("week", 1)
         wt = WEEKS.get(week, "Программа")
         diw = ((day - 1) % 7) + 1
         df = FOCUSES.get(week, {}).get(diw, "Следуй программе")
-        name = u.get("name", "друг")
-        msg = (f"☀️ Привет, {name}! Напоминаю о программе.\n\n"
+        msg = (f"☀️ {name}, доброе утро!\n\n"
                f"День {day}/28 — {W_EMOJI.get(week,'📋')} Неделя {week}: {wt}\n\n"
-               f"🎯 Фокус этой недели: {df}\n\n"
+               f"🎯 Фокус дня: {df}\n\n"
                f"📸 Пришли фото или напиши как кожа — продолжим вместе.")
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
-            u["last_weekly_notify"] = now.isoformat()
+            u["last_daily_notify"] = now.isoformat()
             changed = True
-            log.info(f"Weekly notify → {uid}")
+            log.info(f"Daily notify → {uid}")
         except Exception as e:
-            log.warning(f"Weekly notify {uid}: {e}")
+            log.warning(f"Daily notify {uid}: {e}")
     if changed: sh(h)
 
 async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
@@ -1217,7 +1269,7 @@ def main():
         ])
         notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
         application.job_queue.run_daily(
-            send_weekly_notifications,
+            send_daily_notifications,
             time=dtime(hour=notify_hour, minute=0)
         )
         application.job_queue.run_repeating(
