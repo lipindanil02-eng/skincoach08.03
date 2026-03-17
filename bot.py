@@ -559,6 +559,10 @@ async def check_liveness(b64: str, code: str) -> bool:
 
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    # Route /face photos to dedicated handler
+    if u["state"] == S_FACE:
+        await handle_face_photo(upd, ctx)
+        return
     is_compete_photo=(u["state"]==S_COMPETE)
     if u["state"] in (S_NAME,S_DUR,S_TRIED):
         await upd.message.reply_text("Сначала познакомимся. /start"); return
@@ -1065,6 +1069,104 @@ async def cmd_ref(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     )
     await upd.message.reply_text(msg)
 
+async def cmd_face(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    u["state"]=S_FACE;sh(h)
+    await upd.message.reply_text("✨ Пришли фото лица при дневном свете, без макияжа.")
+
+async def handle_face_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    st=await upd.message.reply_text("🔍 Анализирую кожу лица... ⏳")
+    await upd.message.chat.send_action(ChatAction.TYPING)
+    try:
+        ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+        b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
+    except Exception as e:
+        log.error(f"face photo download: {e}")
+        try: await st.delete()
+        except: pass
+        await upd.message.reply_text("Не удалось загрузить фото. Попробуй ещё раз.")
+        u["state"]=S_ACTIVE;sh(h)
+        return
+
+    # 1. Quality check
+    qp=rp("1_quality.txt","Проверь качество фото.")
+    try:
+        qraw=await call_raw([
+            {"role":"system","content":qp},
+            {"role":"user","content":[
+                {"type":"text","text":"Проверь качество этого фото кожи лица."},
+                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
+            ]}],VISION_M,VIS_FB,300)
+        qd=xj(qraw)
+        if isinstance(qd,dict) and qd.get("quality_ok")==False:
+            try: await st.delete()
+            except: pass
+            await upd.message.reply_text("📸 Фото нечёткое или лицо не видно. Попробуй при дневном свете, поближе.")
+            u["state"]=S_ACTIVE;sh(h)
+            return
+    except Exception as e:
+        log.warning(f"face quality check failed: {e}")
+
+    # 2. Face vision scoring
+    fp=rp("face_vision.txt","Оцени кожу лица.")
+    try:
+        fraw=await call_raw([
+            {"role":"system","content":fp},
+            {"role":"user","content":[
+                {"type":"text","text":"Оцени кожу лица на этом фото."},
+                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
+            ]}],VISION_M,VIS_FB,600)
+        fd=xj(fraw)
+    except Exception as e:
+        log.error(f"face vision fail: {e}")
+        try: await st.delete()
+        except: pass
+        await upd.message.reply_text("Не удалось проанализировать. Попробуй позже.")
+        u["state"]=S_ACTIVE;sh(h)
+        return
+
+    try: await st.delete()
+    except: pass
+
+    if not isinstance(fd,dict) or fd.get("quality_ok")==False:
+        await upd.message.reply_text("📸 Не вижу лицо чётко. Попробуй при хорошем освещении.")
+        u["state"]=S_ACTIVE;sh(h)
+        return
+
+    sc = fd.get("skin_score") or {}
+    total = sc.get("total",0)
+    grade = score_grade(total)
+    name = u.get("name","друг")
+    visual_age = fd.get("visual_age","?")
+    concern = fd.get("cosmetic_concern") or ""
+
+    lines = [f"✨ {name}, вот оценка кожи лица:\n"]
+    lines.append(f"📊 {total}% — {grade}")
+    for label, key in [("Тон","tone"),("Увлажн.","hydration"),("Текстура","texture"),
+                        ("Живость","vitality"),("Чистота","cleanliness"),
+                        ("Молодость","youth"),("Глаза","eye_area")]:
+        pct = sc.get(key,0)
+        lines.append(f"{score_bar(pct)} {label}: {pct}%")
+    lines.append(f"\n👁 Визуальный возраст: {visual_age} лет")
+    if concern:
+        lines.append(f"🔎 {concern}")
+
+    reply = "\n".join(lines)
+
+    # Submit to skinrank
+    u = on_regular_photo_score(u, {"total": total, **sc}, False)
+    u["state"]=S_ACTIVE;sh(h)
+    await upd.message.reply_text(reply)
+
+    # Upsell if not paid
+    if not is_access_allowed(u):
+        await asyncio.sleep(0.5)
+        await upd.message.reply_text(
+            "💡 Хочешь программу ухода под эту оценку?\n"
+            "👉 /subscribe — 490₽/мес"
+        )
+
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
@@ -1111,6 +1213,7 @@ def main():
     app.add_handler(CommandHandler("grant",cmd_grant))
     app.add_handler(CommandHandler("revoke",cmd_revoke))
     app.add_handler(CommandHandler("ref",cmd_ref))
+    app.add_handler(CommandHandler("face",cmd_face))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
