@@ -45,6 +45,9 @@ def apply_migration_defaults(u: dict) -> None:
         "ref_count": 0,
         "discount_pct": 0,
         "notify_daily": None,  # None=not asked, True=yes, False=no
+        "bonus_days": 0,
+        "photo_history": [],
+        "source": None,
     }
     for key, val in defaults.items():
         if key not in u:
@@ -58,7 +61,8 @@ def is_trial_active(u: dict) -> bool:
     try:
         start = datetime.fromisoformat(trial_start).date()
         today = datetime.utcnow().date()
-        return (today - start).days < TRIAL_DAYS
+        total_days = TRIAL_DAYS + u.get("bonus_days", 0)
+        return (today - start).days < total_days
     except Exception:
         return True
 
@@ -70,7 +74,8 @@ def days_left_trial(u: dict) -> int:
     try:
         start = datetime.fromisoformat(trial_start).date()
         today = datetime.utcnow().date()
-        remaining = TRIAL_DAYS - (today - start).days
+        total_days = TRIAL_DAYS + u.get("bonus_days", 0)
+        remaining = total_days - (today - start).days
         return max(0, remaining)
     except Exception:
         return 0
