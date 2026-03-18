@@ -309,8 +309,9 @@ async def pipeline_final(u,answers_text=""):
     # STEP 6: Recommendations
     log.info("📋 6/8 Recommendations...")
     rp6=rp("6_recommendations.txt","Составь рекомендации. JSON.")
+    soap_note = "\n\nВАЖНО: пользователь пришёл с упаковки мыла SkinCoach (сера+дёготь). Обязательно включи soap_protocol: конкретную схему применения мыла — сколько раз в день, как долго держать пену, чем увлажнять после, когда сделать паузу." if u.get("source")=="soap" else ""
     ctx6=json.dumps({"all_data":json.loads(all_data) if isinstance(all_data,str) else all_data,
-        "triage":triage},ensure_ascii=False)
+        "triage":triage,"soap_user":u.get("source")=="soap"},ensure_ascii=False)+soap_note
     try:
         recs=await cj([{"role":"system","content":rp6},{"role":"user","content":ctx6}],
             STRONG_M,TXT_FB,800)
@@ -337,7 +338,8 @@ async def pipeline_final(u,answers_text=""):
     rp8=rp("8_response.txt","Собери ответ для Telegram.")
     rp8=rp8.replace("{name}",nm).replace("{day}",str(dy)).replace("{week}",str(wk))
     ctx8=json.dumps({"recommendations":recs,"triage":triage,"reasoning":reason,
-        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt},ensure_ascii=False)
+        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt,
+        "soap_user":u.get("source")=="soap"},ensure_ascii=False)
     try:
         final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
             REASON_M,TXT_FB,900)
@@ -381,10 +383,32 @@ async def send(msg,txt):
 # ════════════════════════════════════
 #  HANDLERS
 # ════════════════════════════════════
+SOAP_WELCOME = (
+    "Привет! 👋\n\n"
+    "Ты сканировал QR-код с упаковки мыла SkinCoach.\n\n"
+    "Это мыло с серой и дёгтем — мощное средство. Но чтобы оно помогло, "
+    "а не навредило — важно знать твой этап обострения.\n\n"
+    "Я — ИИ-ассистент на базе 8-летнего опыта кинезиолога. "
+    "За 2 минуты я:\n"
+    "✅ Проанализирую твою кожу по фото\n"
+    "✅ Выдам точную схему применения мыла на 14 дней\n"
+    "✅ Дам диету, чтобы убрать зуд изнутри\n\n"
+    "Всё это — бесплатно.\n\n"
+    "Как тебя зовут?"
+)
+
 async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
     # Handle referral link: /start REF_12345
     args = ctx.args
+    # Handle soap QR flow: /start soap
+    if args and args[0].lower() == "soap":
+        u["source"] = "soap"
+        h[str(uid)]["state"] = S_NAME
+        h[str(uid)]["msgs"] = []
+        sh(h)
+        await upd.message.reply_text(SOAP_WELCOME)
+        return
     if args and args[0].startswith("REF_"):
         ref_code = args[0]
         referrer_uid = None
@@ -426,9 +450,17 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         return
     if u["state"]==S_TRIED:
         u["tried"]=txt.strip();u["state"]=S_PHOTO;sh(h)
-        await upd.message.reply_text(
-            f"Отлично, {u['name']}.\n\n📸 Отправь фото проблемного участка.\n"
-            "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
+        if u.get("source") == "soap":
+            await upd.message.reply_text(
+                f"Отлично, {u['name']}!\n\n"
+                "📸 Теперь пришли фото кожи — того участка, где планируешь применять мыло.\n"
+                "Дневной свет, крупный план.\n\n"
+                "На основе анализа я дам точную схему применения мыла:\n"
+                "сколько раз в день, как долго держать, чем увлажнять после.")
+        else:
+            await upd.message.reply_text(
+                f"Отлично, {u['name']}.\n\n📸 Отправь фото проблемного участка.\n"
+                "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
         return
     if u["state"]==S_PHOTO:
         sh(h)

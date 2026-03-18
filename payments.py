@@ -47,6 +47,7 @@ def apply_migration_defaults(u: dict) -> None:
         "notify_daily": None,  # None=not asked, True=yes, False=no
         "bonus_days": 0,
         "photo_history": [],
+        "source": None,
     }
     for key, val in defaults.items():
         if key not in u:
