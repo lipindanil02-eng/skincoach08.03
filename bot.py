@@ -442,11 +442,11 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     # Onboarding
     if u["state"]==S_NAME:
         u["name"]=txt.strip();u["state"]=S_DUR;sh(h)
-        await upd.message.reply_text(f"{u['name']}, какая у тебя проблема с кожей и как давно беспокоит?")
+        await upd.message.reply_text(f"{u['name']}, расскажи о своей коже — есть проблемы или просто хочешь улучшить состояние? И как давно замечаешь?")
         return
     if u["state"]==S_DUR:
         u["duration"]=txt.strip();u["state"]=S_TRIED;sh(h)
-        await upd.message.reply_text("Что уже пробовал(а)? Мази, диеты, народные средства, фототерапия?")
+        await upd.message.reply_text("Что уже пробовал(а) для кожи? Кремы, мази, диеты, или ничего особенного?")
         return
     if u["state"]==S_TRIED:
         u["tried"]=txt.strip();u["state"]=S_PHOTO;sh(h)
@@ -496,10 +496,13 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
                 await send(upd.message, reply)
         except Exception:
             await send(upd.message, reply)
-        # Offer lab tests after diagnosis
-        labs_msg=format_labs_message(u.get("diagnosis",""))
-        u["state"]=S_LABS;sh(h)
-        await upd.message.reply_text(labs_msg)
+        # Offer lab tests after diagnosis (skip for healthy skin)
+        if u.get("diagnosis","").lower() != "здоровая кожа":
+            labs_msg=format_labs_message(u.get("diagnosis",""))
+            u["state"]=S_LABS;sh(h)
+            await upd.message.reply_text(labs_msg)
+        else:
+            sh(h)
         return
 
     # Labs input
@@ -649,7 +652,28 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     # Access gate — not for face photos (S_FACE handled separately)
     if u.get("state") != "face" and not is_access_allowed(u):
-        await upd.message.reply_text(PAYWALL_MESSAGE)
+        admin_id = os.getenv("ADMIN_ID","").strip()
+        if admin_id:
+            try:
+                ui = upd.effective_user
+                await ctx.bot.forward_message(
+                    chat_id=int(admin_id),
+                    from_chat_id=upd.effective_chat.id,
+                    message_id=upd.message.message_id)
+                await ctx.bot.send_message(
+                    int(admin_id),
+                    f"💳 Скриншот оплаты!\n"
+                    f"ID: {ui.id}\n"
+                    f"Имя: {ui.first_name} {ui.last_name or ''}\n"
+                    f"@{ui.username or 'без username'}\n"
+                    f"Активировать: /grant {ui.id} 30")
+                await upd.message.reply_text(
+                    "Скриншот получил! Проверю и активирую доступ в течение часа. ⏳")
+            except Exception as e:
+                log.warning(f"Payment screenshot forward fail: {e}")
+                await upd.message.reply_text(PAYWALL_MESSAGE)
+        else:
+            await upd.message.reply_text(PAYWALL_MESSAGE)
         return
 
     st=await upd.message.reply_text(
@@ -825,10 +849,13 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             u["photo_history"] = []
         u["photo_history"].append(hist_entry)
         u["photo_history"] = u["photo_history"][-30:]  # keep last 30
-        # Offer lab tests after diagnosis
-        labs_msg=format_labs_message(u.get("diagnosis",""))
-        u["state"]=S_LABS;sh(h)
-        await send(upd.message,labs_msg)
+        # Offer lab tests after diagnosis (skip for healthy skin)
+        if u.get("diagnosis","").lower() != "здоровая кожа":
+            labs_msg=format_labs_message(u.get("diagnosis",""))
+            u["state"]=S_LABS;sh(h)
+            await send(upd.message,labs_msg)
+        else:
+            sh(h)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
