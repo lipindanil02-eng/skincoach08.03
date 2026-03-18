@@ -397,9 +397,11 @@ async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             u["discount_pct"] = 50
             h[referrer_uid]["ref_count"] = h[referrer_uid].get("ref_count",0) + 1
             h[referrer_uid]["discount_pct"] = 50
+            h[referrer_uid]["bonus_days"] = h[referrer_uid].get("bonus_days",0) + 7
             try:
                 await ctx.bot.send_message(int(referrer_uid),
                     "🎉 Друг зарегистрировался по твоей ссылке!\n"
+                    "+7 дней к пробному периоду начислены!\n"
                     "Твоя скидка 50% активирована — используй /subscribe.")
             except Exception as e:
                 log.warning(f"ref notify fail: {e}")
@@ -781,6 +783,16 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
                 await send(upd.message, reply)
         except Exception:
             await send(upd.message, reply)
+        # Save to photo history
+        hist_entry = {
+            "date": datetime.now().strftime("%d.%m.%Y"),
+            "diagnosis": u.get("diagnosis",""),
+            "score": (u.get("vision_data") or {}).get("skin_score",{}).get("total"),
+        }
+        if "photo_history" not in u:
+            u["photo_history"] = []
+        u["photo_history"].append(hist_entry)
+        u["photo_history"] = u["photo_history"][-30:]  # keep last 30
         # Offer lab tests after diagnosis
         labs_msg=format_labs_message(u.get("diagnosis",""))
         u["state"]=S_LABS;sh(h)
@@ -863,6 +875,27 @@ async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if u.get("skin_score_last"):
         lines.append(f"📊 Последняя оценка: {u['skin_score_last']}%")
     await upd.message.reply_text("\n".join(lines))
+
+async def cmd_progress(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    history = u.get("photo_history",[])
+    if not history:
+        await upd.message.reply_text("Пока нет истории анализов. Пришли фото кожи — начнём отслеживать прогресс!")
+        return
+    lines=["📈 *Твой прогресс:*\n"]
+    for i,entry in enumerate(history,1):
+        date=entry.get("date","?")
+        diag=entry.get("diagnosis","?")
+        score=entry.get("score")
+        score_str=f" — {score_bar(score)} {score}%" if score is not None else ""
+        lines.append(f"{i}. {date}: {diag}{score_str}")
+    # Trend
+    scores=[e.get("score") for e in history if e.get("score") is not None]
+    if len(scores)>=2:
+        delta=scores[-1]-scores[0]
+        trend="📈" if delta>0 else "📉" if delta<0 else "➡️"
+        lines.append(f"\n{trend} Динамика: {scores[0]}% → {scores[-1]}% ({'+' if delta>=0 else ''}{delta}%)")
+    await upd.message.reply_text("\n".join(lines),parse_mode="Markdown")
 
 async def cmd_achievements(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
@@ -948,10 +981,12 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "📸 Фото — полный анализ с диагнозом и вероятностями\n"
         "💬 Текст — вопросы, отчёты\n\n"
         "/next — следующий день\n/status — прогресс + диагноз\n"
+        "/progress — история всех анализов с динамикой\n"
         "/achievements — бейджи, уровень, очки\n"
         "/bonus — бонус за вступление в группу\n"
         "/labs — ввести или обновить анализы\n"
         "/leaderboard — топ участников\n"
+        "/ref — реферальная ссылка (+7 дней другу)\n"
         "/start — заново")
 
 async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
@@ -1473,6 +1508,7 @@ def main():
     # Hidden commands (still work if typed directly)
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
+    app.add_handler(CommandHandler("progress",cmd_progress))
     app.add_handler(CommandHandler("achievements",cmd_achievements))
     app.add_handler(CommandHandler("bonus",cmd_bonus))
     app.add_handler(CommandHandler("labs",cmd_labs))
