@@ -103,18 +103,69 @@ def split_and_copy(files: list, cls: str, out_dir: str):
 # СБОР ФАЙЛОВ ПО ИСТОЧНИКАМ
 # ============================================================
 
+HAM_ONEHOT_MAP = {
+    "MEL": "melanoma",
+    "NV":  "melanocytic_nevus",
+    "BCC": "basal_cell_carcinoma",
+    "AKIEC": "actinic_keratosis",
+    "BKL": "seborrheic_keratosis",
+    "DF":  "dermatofibroma",
+    "VASC": "vascular_lesion",
+}
+
+
+def _parse_ham_groundtruth(csv_path, img_dirs):
+    """Parse GroundTruth.csv (one-hot format): image,MEL,NV,BCC,AKIEC,BKL,DF,VASC"""
+    result = defaultdict(list)
+    with open(csv_path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            img_id = row.get("image", "").strip()
+            if not img_id:
+                continue
+            label = None
+            for code, name in HAM_ONEHOT_MAP.items():
+                val = row.get(code, "0").strip()
+                try:
+                    if float(val) == 1.0:
+                        label = name
+                        break
+                except ValueError:
+                    continue
+            if not label:
+                continue
+            for img_dir in img_dirs:
+                for ext in ["", ".jpg", ".jpeg", ".png"]:
+                    p = os.path.join(img_dir, img_id + ext)
+                    if os.path.exists(p):
+                        result[label].append(p)
+                        break
+    return result
+
+
 def collect_ham(ham_dir: str) -> dict:
     """Возвращает {condition: [file_paths]}"""
     result = defaultdict(list)
-    csv_path = _find_csv(ham_dir, ["HAM10000_metadata.csv", "metadata.csv"])
-    if not csv_path:
-        print("  ❌ HAM10000: metadata.csv не найден")
-        return result
 
     img_dirs = _find_img_dirs(ham_dir, [
         "HAM10000_images_part_1", "HAM10000_images_part_2",
         "images", "HAM10000_images"
     ])
+
+    # Try GroundTruth.csv first (one-hot format from surajghuwalewala)
+    gt_path = os.path.join(ham_dir, "GroundTruth.csv")
+    if os.path.exists(gt_path):
+        print(f"  📄 Используем GroundTruth.csv (one-hot формат)")
+        result = _parse_ham_groundtruth(gt_path, img_dirs)
+        for cls, files in result.items():
+            print(f"  {cls}: {len(files)}")
+        return result
+
+    # Fallback to HAM10000_metadata.csv (dx column format)
+    csv_path = _find_csv(ham_dir, ["HAM10000_metadata.csv", "metadata.csv"])
+    if not csv_path:
+        print("  ❌ HAM10000: CSV не найден (ни GroundTruth.csv, ни metadata.csv)")
+        return result
 
     with open(csv_path, encoding="utf-8") as f:
         for row in csv.DictReader(f):

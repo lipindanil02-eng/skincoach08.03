@@ -49,10 +49,41 @@ def _find_csv(base, names):
     return None
 
 
+HAM_ONEHOT_MAP = {
+    "MEL": "melanoma",
+    "NV":  "melanocytic_nevus",
+    "BCC": "basal_cell_carcinoma",
+    "AKIEC": "actinic_keratosis",
+    "BKL": "seborrheic_keratosis",
+    "DF":  "dermatofibroma",
+    "VASC": "vascular_lesion",
+}
+
+
 def count_ham(ham_dir: str, counts: dict):
+    # Try GroundTruth.csv first (one-hot format)
+    gt_path = os.path.join(ham_dir, "GroundTruth.csv")
+    if os.path.exists(gt_path):
+        print(f"  📄 Используем GroundTruth.csv (one-hot формат)")
+        n = 0
+        with open(gt_path, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                for code, name in HAM_ONEHOT_MAP.items():
+                    val = row.get(code, "0").strip()
+                    try:
+                        if float(val) == 1.0:
+                            counts[name] += 1
+                            n += 1
+                            break
+                    except ValueError:
+                        continue
+        print(f"  ✅ HAM10000: {n} строк")
+        return
+
+    # Fallback to metadata.csv
     csv_path = _find_csv(ham_dir, ["HAM10000_metadata.csv", "metadata.csv"])
     if not csv_path:
-        print("  ❌ HAM10000: metadata.csv не найден")
+        print("  ❌ HAM10000: CSV не найден (ни GroundTruth.csv, ни metadata.csv)")
         return
     n = 0
     with open(csv_path, encoding="utf-8") as f:
