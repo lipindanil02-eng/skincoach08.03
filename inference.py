@@ -58,19 +58,77 @@ IMG_SIZE = 300
 CONFIDENCE_THRESHOLD = 0.5
 
 CLASS_LABELS_RU = {
-    "melanoma":              "Меланома",
-    "nevus":                 "Невус (родинка)",
-    "basal_cell_carcinoma":  "Базальноклеточный рак",
-    "actinic_keratosis":     "Актинический кератоз",
-    "keratosis":             "Себорейный кератоз",
-    "psoriasis":             "Псориаз",
-    "eczema":                "Экзема",
-    "dermatitis":            "Дерматит",
-    "acne":                  "Акне",
-    "vitiligo":              "Витилиго",
-    "rosacea":               "Розацеа",
-    "other":                 "Другое заболевание",
+    # Онкологические / предраковые
+    "melanoma":                     "Меланома",
+    "basal_cell_carcinoma":         "Базальноклеточный рак",
+    "squamous_cell_carcinoma":      "Плоскоклеточный рак",
+    "actinic_keratosis":            "Актинический кератоз",
+    # Доброкачественные образования
+    "melanocytic_nevus":            "Меланоцитарный невус (родинка)",
+    "nevus":                        "Невус (родинка)",
+    "seborrheic_keratosis":         "Себорейный кератоз",
+    "keratosis":                    "Себорейный кератоз",
+    "dermatofibroma":               "Дерматофиброма",
+    "vascular_lesion":              "Сосудистое образование",
+    "keloid":                       "Келоид",
+    "lipoma":                       "Липома",
+    # Воспалительные
+    "psoriasis":                    "Псориаз",
+    "plaque_psoriasis":             "Псориаз (бляшечный)",
+    "guttate_psoriasis":            "Каплевидный псориаз",
+    "eczema":                       "Экзема",
+    "atopic_dermatitis":            "Атопический дерматит",
+    "dyshidrotic_eczema":           "Дисгидротическая экзема",
+    "nummular_eczema":              "Нуммулярная экзема",
+    "dermatitis":                   "Дерматит",
+    "contact_dermatitis":           "Контактный дерматит",
+    "allergic_contact_dermatitis":  "Аллергический контактный дерматит",
+    "seborrheic_dermatitis":        "Себорейный дерматит",
+    "perioral_dermatitis":          "Периоральный дерматит",
+    "drug_eruption":                "Лекарственная сыпь",
+    "rosacea":                      "Розацеа",
+    "erythema_multiforme":          "Многоформная эритема",
+    # Акнеформные
+    "acne":                         "Акне",
+    "acne_vulgaris":                "Акне вульгарис",
+    "cystic_acne":                  "Кистозное акне",
+    "folliculitis":                 "Фолликулит",
+    "hidradenitis":                 "Гнойный гидраденит",
+    "milia":                        "Милиумы",
+    # Пигментация
+    "vitiligo":                     "Витилиго",
+    "melasma":                      "Мелазма",
+    "lentigo":                      "Лентиго",
+    # Инфекционные
+    "tinea":                        "Тинея (грибковая инфекция)",
+    "tinea_versicolor":             "Отрубевидный лишай",
+    "tinea_corporis":               "Микоз туловища",
+    "tinea_pedis":                  "Грибок стопы",
+    "warts":                        "Бородавки",
+    "molluscum_contagiosum":        "Контагиозный моллюск",
+    "impetigo":                     "Импетиго",
+    "cellulitis":                   "Целлюлит (инфекционный)",
+    "herpes_simplex":               "Простой герпес",
+    "herpes_zoster":                "Опоясывающий герпес",
+    "scabies":                      "Чесотка",
+    # Аутоиммунные / системные
+    "lichen_planus":                "Красный плоский лишай",
+    "lupus_erythematosus":          "Красная волчанка",
+    "scleroderma":                  "Склеродермия",
+    "urticaria":                    "Крапивница",
+    "pityriasis_rosea":             "Розовый лишай",
+    "pemphigus":                    "Пузырчатка",
+    # Другое
+    "other":                        "Другое заболевание",
 }
+
+
+def get_label_ru(class_name: str) -> str:
+    """Получить русское название болезни. Если нет — форматирует из кода."""
+    if class_name in CLASS_LABELS_RU:
+        return CLASS_LABELS_RU[class_name]
+    # Fallback: "basal_cell_carcinoma" → "Basal Cell Carcinoma"
+    return class_name.replace("_", " ").title()
 
 _model = None
 _class_map = None
@@ -153,7 +211,7 @@ def predict_image(image_path: str) -> dict:
 
     best_class = idx_to_class.get(int(top_idx[0]), f"class_{top_idx[0]}")
     best_prob = float(top_probs[0])
-    diagnosis_ru = CLASS_LABELS_RU.get(best_class, best_class)
+    diagnosis_ru = get_label_ru(best_class)
     reliable = best_prob >= CONFIDENCE_THRESHOLD
 
     top3 = []
@@ -161,7 +219,7 @@ def predict_image(image_path: str) -> dict:
         cls = idx_to_class.get(int(idx), f"class_{idx}")
         top3.append({
             "diagnosis": cls,
-            "diagnosis_ru": CLASS_LABELS_RU.get(cls, cls),
+            "diagnosis_ru": get_label_ru(cls),
             "confidence_pct": f"{float(prob)*100:.1f}%"
         })
 

@@ -1,5 +1,14 @@
 {
-  "0": "melanoma",
-  "1": "nevus",
-  "2": "other"
+  "0": "acne",
+  "1": "actinic_keratosis",
+  "2": "basal_cell_carcinoma",
+  "3": "dermatitis",
+  "4": "eczema",
+  "5": "keratosis",
+  "6": "melanoma",
+  "7": "nevus",
+  "8": "other",
+  "9": "psoriasis",
+  "10": "rosacea",
+  "11": "vitiligo"
 }
