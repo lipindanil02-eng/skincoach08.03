@@ -1,9 +1,13 @@
 """
-prepare_dataset.py — Подготовка датасета из HAM10000 + Fitzpatrick17k
-Запускать в Google Colab или локально ПЕРЕД обучением.
+prepare_dataset.py — Подготовка датасета из HAM10000 + SCIN (Google) + Fitzpatrick17k
+Запускать в Google Colab / Kaggle ПЕРЕД обучением.
 
 Использование:
-    python prepare_dataset.py --ham /path/to/HAM10000 --fitz /path/to/fitzpatrick17k --out ./dataset
+    python prepare_dataset.py \
+        --ham  /path/to/HAM10000 \
+        --scin /path/to/scin \
+        --fitz /path/to/fitzpatrick17k \
+        --out  ./dataset
 """
 
 import os
@@ -378,9 +382,140 @@ def save_class_map(out_dir):
     print(f"\n✅ class_map.json сохранён: {class_map}")
 
 
+# ============================================================
+# SCIN (Google + Stanford Medicine) — маппинг категорий
+# https://github.com/google-research-datasets/scin
+# ============================================================
+
+SCIN_CLASS_MAP = {
+    # Воспалительные / аллергические
+    "eczema":                        "eczema",
+    "atopic dermatitis":             "eczema",
+    "contact dermatitis":            "dermatitis",
+    "allergic contact dermatitis":   "dermatitis",
+    "seborrheic dermatitis":         "dermatitis",
+    "psoriasis":                     "psoriasis",
+    "rosacea":                       "rosacea",
+    "acne":                          "acne",
+    "acne vulgaris":                 "acne",
+    # Инфекционные
+    "tinea":                         "other",
+    "tinea versicolor":              "other",
+    "warts":                         "other",
+    "molluscum contagiosum":         "other",
+    "impetigo":                      "other",
+    "cellulitis":                    "other",
+    "folliculitis":                  "acne",
+    # Пигментация / новообразования
+    "melanoma":                      "melanoma",
+    "nevus":                         "nevus",
+    "basal cell carcinoma":          "basal_cell_carcinoma",
+    "actinic keratosis":             "actinic_keratosis",
+    "seborrheic keratosis":          "keratosis",
+    "vitiligo":                      "vitiligo",
+    "urticaria":                     "other",
+    "drug eruption":                 "dermatitis",
+    "insect bite":                   "other",
+    "other":                         "other",
+}
+
+
+def process_scin(scin_dir, out_dir):
+    """
+    SCIN (Google) датасет:
+    scin_dir/
+      scin_labels.csv          # image_id, label, ...
+      images/                  # или scin_images/
+        {image_id}.jpg
+
+    Скачать: git clone https://github.com/google-research-datasets/scin
+    или: pip install gcsfs && python download_scin.py
+    """
+    print("\n📂 Обрабатываю SCIN (Google)...")
+
+    # Ищем CSV с метками
+    csv_path = None
+    for name in ["scin_labels.csv", "labels.csv", "scin_data.csv",
+                 "train.csv", "scin_train_labels.csv"]:
+        p = os.path.join(scin_dir, name)
+        if os.path.exists(p):
+            csv_path = p
+            break
+    if not csv_path:
+        # Ищем любой CSV
+        for fname in os.listdir(scin_dir):
+            if fname.endswith(".csv"):
+                csv_path = os.path.join(scin_dir, fname)
+                break
+    if not csv_path:
+        print("  ❌ CSV с метками не найден в", scin_dir)
+        return
+
+    # Ищем папку с изображениями
+    img_dir = None
+    for name in ["images", "scin_images", "imgs", "photos"]:
+        p = os.path.join(scin_dir, name)
+        if os.path.isdir(p):
+            img_dir = p
+            break
+    if not img_dir:
+        img_dir = scin_dir
+
+    print(f"  CSV: {csv_path}")
+    print(f"  Изображения: {img_dir}")
+
+    class_files = {cls: [] for cls in ALL_CLASSES}
+    skipped = set()
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # SCIN может иметь разные названия колонок
+            label = (
+                row.get("label") or row.get("condition") or
+                row.get("skin_condition") or row.get("diagnosis") or ""
+            ).strip().lower()
+
+            our_class = SCIN_CLASS_MAP.get(label)
+            if not our_class:
+                # Попробуем частичное совпадение
+                for key, val in SCIN_CLASS_MAP.items():
+                    if key in label or label in key:
+                        our_class = val
+                        break
+            if not our_class:
+                skipped.add(label)
+                continue
+
+            img_id = (
+                row.get("image_id") or row.get("id") or
+                row.get("filename") or row.get("file_name") or ""
+            ).strip()
+            if not img_id:
+                continue
+
+            for ext in ["", ".jpg", ".jpeg", ".png", ".webp"]:
+                p = os.path.join(img_dir, img_id + ext)
+                if os.path.exists(p):
+                    class_files[our_class].append(p)
+                    break
+
+    for cls, files in class_files.items():
+        if not files:
+            continue
+        train_dir = os.path.join(out_dir, "train", cls)
+        val_dir   = os.path.join(out_dir, "val",   cls)
+        split_and_copy(files, train_dir, val_dir)
+        print(f"  {cls}: {len(files)} фото")
+
+    if skipped:
+        print(f"  ⚠️  Пропущены метки: {', '.join(sorted(skipped)[:15])}...")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ham",  default=None, help="Путь к папке HAM10000")
+    parser.add_argument("--scin", default=None, help="Путь к папке SCIN (Google dataset)")
     parser.add_argument("--fitz", default=None, help="Путь к папке Fitzpatrick17k")
     parser.add_argument("--out",  default="./dataset", help="Выходная папка датасета")
     args = parser.parse_args()
@@ -394,6 +529,11 @@ if __name__ == "__main__":
         process_ham10000(args.ham, args.out)
     else:
         print("⚠️  --ham не указан, пропускаю HAM10000")
+
+    if args.scin:
+        process_scin(args.scin, args.out)
+    else:
+        print("⚠️  --scin не указан, пропускаю SCIN (Google)")
 
     if args.fitz:
         process_fitzpatrick(args.fitz, args.out)
