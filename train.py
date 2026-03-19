@@ -31,6 +31,7 @@ parser.add_argument("--out",      default="best_model.pth",  help="Путь дл
 parser.add_argument("--hf_repo",  default="",                help="HuggingFace repo (danyil163/SCINCOACH)")
 parser.add_argument("--hf_token", default="",                help="HuggingFace write token")
 parser.add_argument("--workers",  type=int, default=4,       help="DataLoader workers")
+parser.add_argument("--resume",   default="",                help="Путь к best_model.pth для дообучения")
 args = parser.parse_args()
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -105,6 +106,35 @@ model.classifier = nn.Sequential(
     nn.Linear(in_features, num_classes)
 )
 model = model.to(DEVICE)
+
+# Дообучение: загружаем веса из существующей модели
+if args.resume and os.path.exists(args.resume):
+    print(f"🔄 Загружаем веса для дообучения: {args.resume}")
+    checkpoint = torch.load(args.resume, map_location=DEVICE)
+    saved_map = checkpoint.get("class_map", {})
+    saved_classes = [saved_map[str(i)] for i in range(len(saved_map))]
+    current_classes = train_dataset.classes
+
+    if saved_classes == current_classes:
+        # Классы совпадают — загружаем все веса
+        raw_model = model.module if hasattr(model, "module") else model
+        raw_model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"✅ Веса загружены полностью (val_acc было {checkpoint.get('val_acc', '?'):.4f})")
+    else:
+        # Классы изменились — загружаем только backbone, голову переобучаем с нуля
+        print(f"⚠️  Классы изменились: было {len(saved_classes)}, стало {len(current_classes)}")
+        print("   Загружаем только backbone (feature extractor), голову обучаем заново")
+        raw_model = model.module if hasattr(model, "module") else model
+        old_state = checkpoint["model_state_dict"]
+        new_state = raw_model.state_dict()
+        # Копируем все слои кроме classifier
+        for k in new_state:
+            if not k.startswith("classifier") and k in old_state and old_state[k].shape == new_state[k].shape:
+                new_state[k] = old_state[k]
+        raw_model.load_state_dict(new_state)
+        print("✅ Backbone загружен, classifier инициализирован заново")
+elif args.resume:
+    print(f"⚠️  --resume указан, но файл не найден: {args.resume}")
 
 # Если несколько GPU
 if torch.cuda.device_count() > 1:
