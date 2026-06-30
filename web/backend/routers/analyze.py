@@ -118,12 +118,28 @@ async def analyze_photo(
     }
 
     try:
-        result_type, result = await pipeline_photo(b64, photo.filename or "", pipeline_user)
-
-        if result_type == "ask_reshoot":
-            return {"status": "reshoot", "message": result, "ml": ml_result}
-        if result_type == "error":
-            return {"status": "error", "message": result, "ml": ml_result}
+        # Если ML дал диагноз — пропускаем vision (OpenRouter не работает с картинками)
+        # Идём сразу к финальной генерации текста
+        if ml_top:
+            pipeline_user["vision_data"] = {
+                "ml_prediction": ml_top,
+                "ml_confidence": ml_conf,
+                "ml_top3": ml_result.get("predictions", []),
+                "description": f"ML-модель определила: {ml_top} ({ml_conf*100:.1f}%)",
+            }
+            pipeline_user["diagnosis"] = ml_top
+            pipeline_user["reasoning_data"] = {
+                "hypotheses": [{"diagnosis": ml_top, "probability": int(ml_conf*100), "reasoning": "ML prediction"}],
+                "primary_diagnosis": ml_top,
+                "confidence": int(ml_conf*100),
+            }
+        else:
+            # ML недоступен — пробуем vision пайплайн
+            result_type, result = await pipeline_photo(b64, photo.filename or "", pipeline_user)
+            if result_type == "ask_reshoot":
+                return {"status": "reshoot", "message": result, "ml": ml_result}
+            if result_type == "error":
+                return {"status": "error", "message": result, "ml": ml_result}
 
         final_text = await pipeline_final(pipeline_user, answers_text="")
 
