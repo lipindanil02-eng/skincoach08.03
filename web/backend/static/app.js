@@ -158,7 +158,17 @@ analyzeBtn.addEventListener('click', async () => {
         clearInterval(progressInterval);
         const data = await res.json();
 
-        if (!res.ok) throw new Error(data.detail || 'Ошибка анализа');
+        if (!res.ok) {
+            if (res.status === 404 && (data.detail || '').includes('User not found')) {
+                // user_id устарел — сбрасываем и просим войти заново
+                localStorage.removeItem('skincoach_user');
+                currentUser = null;
+                clearInterval(progressInterval);
+                location.reload();
+                return;
+            }
+            throw new Error(data.detail || 'Ошибка анализа');
+        }
 
         showResults(data);
     } catch (err) {
@@ -173,21 +183,65 @@ analyzeBtn.addEventListener('click', async () => {
 
 function showResults(data) {
     const content = document.getElementById('results-content');
+    const name = currentUser ? (currentUser.name || 'друг') : 'друг';
     let html = '';
 
-    if (data.ml && data.ml.predictions) {
-        const top = data.ml.predictions[0];
-        html += `<div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <p class="text-sm text-blue-600 font-medium">ML-модель предсказала:</p>
-            <p class="font-bold text-blue-900">${escapeHtml(top.class_name)} — ${(top.probability * 100).toFixed(1)}%</p>
+    // 1. Приветствие и краткое описание того, что ИИ увидел
+    const vision = data.vision || {};
+    const visionDesc = vision.raw_description || vision.description || vision.summary || '';
+    if (visionDesc) {
+        html += `<div class="bg-white border border-slate-200 rounded-xl p-4">
+            <p class="text-slate-700">${escapeHtml(name)}, я вижу, что ${escapeHtml(visionDesc)}</p>
+        </div>`;
+    } else {
+        html += `<div class="bg-white border border-slate-200 rounded-xl p-4">
+            <p class="text-slate-700">${escapeHtml(name)}, анализ фото выполнен.</p>
         </div>`;
     }
 
+    // 2. ML предсказание с top-3 процентами
+    if (data.ml && data.ml.predictions && data.ml.predictions.length) {
+        const preds = data.ml.predictions;
+        let mlHtml = '<div class="bg-blue-50 border border-blue-200 rounded-xl p-4">';
+        mlHtml += '<p class="font-semibold text-blue-900 mb-2">🔬 Предварительный анализ (ML):</p>';
+        preds.forEach(p => {
+            const pct = (p.probability * 100).toFixed(1);
+            const cls = escapeHtml(p.class_name);
+            mlHtml += `<div class="flex justify-between items-center py-1">
+                <span class="text-blue-900">${cls}</span>
+                <span class="font-mono font-bold text-blue-700">${pct}%</span>
+            </div>`;
+        });
+        mlHtml += '</div>';
+        html += mlHtml;
+    }
+
+    // 3. Гипотезы от LLM (reasoner A) с процентами, если есть
+    const reasoning = data.reasoning || {};
+    const hyps = reasoning.hypotheses || [];
+    if (hyps.length) {
+        let rHtml = '<div class="bg-purple-50 border border-purple-200 rounded-xl p-4">';
+        rHtml += '<p class="font-semibold text-purple-900 mb-2">🧠 Рассуждение ИИ-дерматолога:</p>';
+        hyps.slice(0, 3).forEach(h => {
+            rHtml += `<div class="flex justify-between items-center py-1">
+                <span class="text-purple-900">${escapeHtml(h.diagnosis || h.condition || '?')}</span>
+                <span class="font-mono font-bold text-purple-700">${h.probability || 0}%</span>
+            </div>`;
+        });
+        rHtml += '</div>';
+        html += rHtml;
+    }
+
+    // 4. Финальный диагноз
+    const diagnosis = data.diagnosis || 'требует уточнения';
     html += `<div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
-        <p class="font-medium text-amber-800">Диагноз: ${escapeHtml(data.diagnosis || 'требует уточнения')}</p>
-    </div>
-    <div class="bg-slate-50 rounded-xl p-4">
-        <h3 class="font-semibold mb-2">Рекомендации</h3>
+        <p class="text-sm text-amber-600 font-medium">Диагноз:</p>
+        <p class="font-bold text-amber-900 text-lg">${escapeHtml(diagnosis)}</p>
+    </div>`;
+
+    // 5. Рекомендации
+    html += `<div class="bg-slate-50 rounded-xl p-4">
+        <h3 class="font-semibold mb-2">📋 Рекомендации</h3>
         <p class="text-slate-700 whitespace-pre-line">${escapeHtml(data.recommendations || 'Анализ выполнен')}</p>
     </div>`;
 
