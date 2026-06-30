@@ -235,7 +235,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
         )
     except Exception as e:
         log.error(f"Vision fail: {e}")
-        return "error", "Не удалось проанализировать фото. Попробуй ещё раз."
+        vis = {"description": "vision недоступна", "ml_only": True}
     u["vision_data"] = vis
 
     # STEP 3a: Dermatology Reasoning (Reasoner A)
