@@ -14,7 +14,7 @@ load_dotenv()
 
 # ─── Config ────────────────────────────────────────────────────────────────
 OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-VISION_M = os.getenv("VISION_MODEL", "google/gemma-4-31b-it:free").strip()
+VISION_M = os.getenv("VISION_MODEL", "openai/gpt-4o-mini").strip()
 REASON_M = os.getenv("REASON_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
 STRONG_M = os.getenv("STRONG_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
 REASONER_A_M = os.getenv("REASONER_A_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
@@ -166,6 +166,10 @@ async def call_raw(msgs, mdl, fb, mt=800):
                             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
                         if not content.strip():
                             log.warning(f"  {m}: empty")
+                            continue
+                        if content.strip().upper().startswith("ERROR"):
+                            log.warning(f"  {m}: error msg: {content[:100]}")
+                            last_e = f"{m}:{content[:100]}"
                             continue
                         log.info(f"  OK: {m}")
                         return content
