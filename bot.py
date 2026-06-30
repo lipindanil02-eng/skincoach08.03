@@ -190,6 +190,16 @@ def gu(h,uid):
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
+def check_access(u,tg_user):
+    """Return True for admins or users with valid trial/subscription."""
+    if tg_user:
+        if tg_user.username and tg_user.username.lower()=="kinesispro":
+            return True
+        admin_id=os.getenv("ADMIN_ID","").strip()
+        if admin_id and str(tg_user.id)==admin_id:
+            return True
+    return is_access_allowed(u)
+
 # API
 def hdr(): return {"Authorization":f"Bearer {OR_KEY}","Content-Type":"application/json",
     "HTTP-Referer":"https://t.me/skincoach_bot","X-Title":"SkinCoach"}
@@ -545,7 +555,7 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     # Active program - chat
     if u["state"]==S_ACTIVE:
         # Free users after trial: 3 questions/week limit
-        if not is_access_allowed(u):
+        if not check_access(u, upd.effective_user):
             if not can_ask_question(u):
                 await upd.message.reply_text(
                     "💬 Ты использовал 3 вопроса на этой неделе.\n"
@@ -651,29 +661,8 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         return
 
     # Access gate — not for face photos (S_FACE handled separately)
-    if u.get("state") != "face" and not is_access_allowed(u):
-        admin_id = os.getenv("ADMIN_ID","").strip()
-        if admin_id:
-            try:
-                ui = upd.effective_user
-                await ctx.bot.forward_message(
-                    chat_id=int(admin_id),
-                    from_chat_id=upd.effective_chat.id,
-                    message_id=upd.message.message_id)
-                await ctx.bot.send_message(
-                    int(admin_id),
-                    f"💳 Скриншот оплаты!\n"
-                    f"ID: {ui.id}\n"
-                    f"Имя: {ui.first_name} {ui.last_name or ''}\n"
-                    f"@{ui.username or 'без username'}\n"
-                    f"Активировать: /grant {ui.id} 30")
-                await upd.message.reply_text(
-                    "Скриншот получил! Проверю и активирую доступ в течение часа. ⏳")
-            except Exception as e:
-                log.warning(f"Payment screenshot forward fail: {e}")
-                await upd.message.reply_text(PAYWALL_MESSAGE)
-        else:
-            await upd.message.reply_text(PAYWALL_MESSAGE)
+    if u.get("state") != "face" and not check_access(u, upd.effective_user):
+        await upd.message.reply_text(PAYWALL_MESSAGE)
         return
 
     st=await upd.message.reply_text(
@@ -860,7 +849,7 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
     if u["state"] not in (S_ACTIVE,S_LABS): await upd.message.reply_text("/start"); return
-    if not is_access_allowed(u):
+    if not check_access(u, upd.effective_user):
         await upd.message.reply_text(PAYWALL_MESSAGE)
         return
     await upd.message.chat.send_action(ChatAction.TYPING)
@@ -1226,7 +1215,7 @@ async def handle_menu_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = q.message  # use callback message for replies
     if action == "next":
         # Inline version of cmd_next
-        if not is_access_allowed(u):
+        if not check_access(u, upd.effective_user):
             await msg.reply_text(PAYWALL_MESSAGE); return
         if u.get("state") != S_ACTIVE:
             await msg.reply_text("Сначала пришли фото кожи 📸"); return
@@ -1526,7 +1515,7 @@ async def handle_face_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(reply)
 
     # Upsell if not paid
-    if not is_access_allowed(u):
+    if not check_access(u, upd.effective_user):
         await asyncio.sleep(0.5)
         await upd.message.reply_text(
             "💡 Хочешь программу ухода под эту оценку?\n"

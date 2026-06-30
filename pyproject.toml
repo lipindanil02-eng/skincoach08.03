@@ -1,0 +1,34 @@
+# Ruff configuration for SkinCoach
+# Code style intentionally keeps compact one-line statements from Claude Code
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    "*.ipynb",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+]
+ignore = [
+    "E701", # Multiple statements on one line (colon) — project style
+    "E702", # Multiple statements on one line (semicolon) — project style
+    "E401", # Multiple imports on one line — project style
+    "E402", # Module level import not at top of file — test pattern
+    "F541", # f-string without any placeholders — harmless
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["bot", "inference", "train", "payments", "gamification", "competition"]
