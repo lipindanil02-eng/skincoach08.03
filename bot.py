@@ -298,9 +298,9 @@ async def pipeline_photo(b64,cap,u):
                   "stress_level":"unknown","recommendations":[]}
     u["reasoner_b"]=reason_b
 
-    # Объединяем результаты A + B для передачи дальше
-    reason=json.dumps({"reasoner_a":reason_a,"reasoner_b":reason_b},ensure_ascii=False)
-    reason=reason_a  # совместимость со старыми шагами (4-7) которые ждут reasoning_data
+    # Сохраняем reasoner_a как reasoning_data для совместимости со шагами 4-7
+    u["reasoning_data"]=reason_a
+    reason=reason_a
 
     # STEP 4: Clinical Questions
     log.info("❓ 4/8 Questions...")
@@ -373,8 +373,11 @@ async def pipeline_final(u,answers_text=""):
         "reasoning":reason,"vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt,
         "soap_user":u.get("source")=="soap"},ensure_ascii=False)
     try:
-        final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
+        judge_result=await cj([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
             JUDGE_M,TXT_FB,900)
+        final=judge_result.get("final_answer","") if isinstance(judge_result,dict) else str(judge_result)
+        if not final:
+            final=format_fallback(recs,reason,triage,u)
     except Exception as e:
         log.error(f"Response fail: {e}")
         final=format_fallback(recs,reason,triage,u)
