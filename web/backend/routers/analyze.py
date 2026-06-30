@@ -102,9 +102,14 @@ async def analyze_photo(
         db.add(analysis)
         await db.commit()
 
+        # Приоритет диагноза: ML > LLM. Если LLM вернул "uncertain" — берём ML.
+        llm_diagnosis = pipeline_user.get("diagnosis")
+        uncertain = llm_diagnosis in ("требуется уточнение", "не определено", "требуется уточнить", None, "")
+        final_diagnosis = ml_top if (uncertain and ml_top) else llm_diagnosis
+
         return {
             "status": "success",
-            "diagnosis": pipeline_user.get("diagnosis"),
+            "diagnosis": final_diagnosis,
             "ml": ml_result,
             "vision": pipeline_user.get("vision_data") or {},
             "reasoning": pipeline_user.get("reasoning_data") or {},
