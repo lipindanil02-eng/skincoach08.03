@@ -33,7 +33,7 @@ load_dotenv()
 
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
 OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
-VISION_M=os.getenv("VISION_MODEL","nvidia/nemotron-nano-12b-v2-vl:free").strip()
+VISION_M=os.getenv("VISION_MODEL","google/gemma-4-31b-it:free").strip()
 REASON_M=os.getenv("REASON_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
 STRONG_M=os.getenv("STRONG_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
 REASONER_A_M=os.getenv("REASONER_A_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()

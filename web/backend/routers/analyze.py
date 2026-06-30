@@ -195,9 +195,13 @@ async def debug_status():
     return {
         "llm_configured": LLM_AVAILABLE,
         "llm_models": {
-            "vision": os.getenv("VISION_MODEL", "default"),
-            "reasoner_a": os.getenv("REASONER_A_MODEL", "default"),
-            "reasoner_b": os.getenv("REASONER_B_MODEL", "default"),
+            "vision": core_pipeline.VISION_M,
+            "reasoner_a": core_pipeline.REASONER_A_M,
+            "reasoner_b": core_pipeline.REASONER_B_M,
+            "reason": core_pipeline.REASON_M,
+            "judge": core_pipeline.JUDGE_M,
+            "vision_fallbacks": core_pipeline.VIS_FB,
+            "text_fallbacks": core_pipeline.TXT_FB,
         } if LLM_AVAILABLE else {},
         "ml_service_url": ML_SERVICE_URL,
         "ml_service_status": ml_status,
