@@ -2,8 +2,9 @@ services:
   - type: web
     name: skincoach-web
     env: python
-    buildCommand: cd web/backend && pip install -r requirements.txt
-    startCommand: cd web/backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDir: web/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.12
@@ -21,6 +22,27 @@ services:
         value: kinesispro
       - key: ORIGINS
         value: "*"
+      - key: ML_SERVICE_URL
+        fromService:
+          name: skincoach-ml
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+  - type: web
+    name: skincoach-ml
+    env: python
+    rootDir: web/ml_service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12
+      - key: HF_REPO
+        value: danyil163/SCINCOACH
+      - key: HF_MODEL_FILE
+        value: best_model.pth
+      - key: HF_CLASS_MAP_FILE
+        value: class_map.json
 
 databases:
   - name: skincoach-web-db

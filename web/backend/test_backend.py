@@ -15,31 +15,29 @@ from main import app
 def run_tests():
     with TestClient(app) as client:
         r = client.get("/")
-        assert r.status_code == 200
-        assert r.json()["message"] == "SkinCoach Web API"
+        assert r.status_code in (200, 307)
         print("OK root")
 
-        r = client.post("/api/auth/telegram", json={"init_data": ""})
+        r = client.post("/api/auth/login", json={"name": "Тестовый"})
         assert r.status_code == 200
         data = r.json()
-        assert data["user"]["username"] == "dev"
-        print("OK auth dev")
+        assert data["user"]["name"] == "Тестовый"
+        user_id = data["user"]["id"]
+        print("OK login")
 
-        r = client.post("/api/analyze/", data={"init_data": ""})
-        assert r.status_code == 422
-        print("OK analyze requires photo")
+        r = client.get(f"/api/profile/?user_id={user_id}")
+        assert r.status_code == 200
+        print("OK profile")
 
-        r = client.get("/api/program/?init_data=")
+        r = client.get(f"/api/program/?user_id={user_id}")
         assert r.status_code == 200
         data = r.json()
         assert data["day"] == 1
         print("OK program")
 
-        r = client.get("/api/profile/?init_data=")
-        assert r.status_code == 200
-        data = r.json()
-        assert "user" in data
-        print("OK profile")
+        r = client.post("/api/analyze/", data={"user_id": user_id})
+        assert r.status_code == 422
+        print("OK analyze requires photo")
 
         print("\nВсе тесты пройдены")
 

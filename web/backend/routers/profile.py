@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import validate_telegram_webapp_data
 from database import get_db
 from models import Analysis, User
 
@@ -13,13 +12,8 @@ router = APIRouter(prefix="/api/profile", tags=["profile"])
 
 
 @router.get("/")
-async def get_profile(init_data: str = Query(...), db: AsyncSession = Depends(get_db)):
-    tg_user = validate_telegram_webapp_data(init_data)
-    if not tg_user:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    telegram_id = str(tg_user.get("id"))
-    result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+async def get_profile(user_id: int = Query(...), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

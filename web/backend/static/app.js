@@ -1,15 +1,48 @@
 // SkinCoach Web — фронтенд
 const API_URL = '';
 
-// Telegram WebApp initData (в dev-режиме пустая строка — бэкенд пропускает)
-let initData = '';
-if (window.Telegram && window.Telegram.WebApp) {
-    initData = window.Telegram.WebApp.initData || '';
-    window.Telegram.WebApp.ready();
-    window.Telegram.WebApp.expand();
+// ─── Auth state ───────────────────────────────────────────────────────────
+let currentUser = JSON.parse(localStorage.getItem('skincoach_user') || 'null');
+
+if (currentUser) {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app-screen').classList.remove('hidden');
+    document.getElementById('user-badge').textContent = currentUser.name || 'Пользователь';
 }
 
-// Навигация
+// Login form
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('login-name').value.trim();
+    if (!name) return;
+    try {
+        const res = await fetch(`${API_URL}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Ошибка входа');
+        }
+        const data = await res.json();
+        currentUser = data.user;
+        localStorage.setItem('skincoach_user', JSON.stringify(currentUser));
+        document.getElementById('login-screen').classList.add('hidden');
+        document.getElementById('app-screen').classList.remove('hidden');
+        document.getElementById('user-badge').textContent = currentUser.name;
+    } catch (err) {
+        alert('Ошибка: ' + err.message);
+    }
+});
+
+// Logout
+document.getElementById('logout-btn').addEventListener('click', () => {
+    localStorage.removeItem('skincoach_user');
+    location.reload();
+});
+
+// ─── Navigation ───────────────────────────────────────────────────────────
 const sections = ['upload', 'results', 'program', 'profile'];
 const navButtons = document.querySelectorAll('.nav-btn');
 
@@ -40,13 +73,14 @@ navButtons.forEach(btn => {
     });
 });
 
-// Загрузка фото
+// ─── Photo upload ────────────────────────────────────────────────────────
 const dropZone = document.getElementById('drop-zone');
 const photoInput = document.getElementById('photo-input');
 const previewContainer = document.getElementById('preview-container');
 const photoPreview = document.getElementById('photo-preview');
 const analyzeBtn = document.getElementById('analyze-btn');
 const analysisStatus = document.getElementById('analysis-status');
+const statusText = document.getElementById('status-text');
 
 let selectedFile = null;
 
@@ -86,29 +120,49 @@ function handleFile(file) {
     reader.readAsDataURL(file);
 }
 
-// Анализ
+// ─── Analyze ─────────────────────────────────────────────────────────────
 analyzeBtn.addEventListener('click', async () => {
     if (!selectedFile) return;
+    if (!currentUser) {
+        alert('Сначала войди');
+        return;
+    }
 
     analyzeBtn.disabled = true;
     previewContainer.classList.add('hidden');
     analysisStatus.classList.remove('hidden');
+    statusText.textContent = 'Загружаем и анализируем...';
 
     const formData = new FormData();
-    formData.append('init_data', initData);
+    formData.append('user_id', currentUser.id);
     formData.append('photo', selectedFile);
+
+    // Симуляция прогресса (реальный запрос может идти 30-90 сек)
+    const progressMessages = [
+        'Проверяем качество фото...',
+        'ML-модель анализирует кожу...',
+        'Дерматологический ИИ ставит диагноз...',
+        'Составляем рекомендации...',
+    ];
+    let i = 0;
+    const progressInterval = setInterval(() => {
+        i = (i + 1) % progressMessages.length;
+        statusText.textContent = progressMessages[i];
+    }, 6000);
 
     try {
         const res = await fetch(`${API_URL}/api/analyze/`, {
             method: 'POST',
             body: formData,
         });
+        clearInterval(progressInterval);
         const data = await res.json();
 
         if (!res.ok) throw new Error(data.detail || 'Ошибка анализа');
 
         showResults(data);
     } catch (err) {
+        clearInterval(progressInterval);
         alert('Ошибка: ' + err.message);
         previewContainer.classList.remove('hidden');
     } finally {
@@ -119,15 +173,25 @@ analyzeBtn.addEventListener('click', async () => {
 
 function showResults(data) {
     const content = document.getElementById('results-content');
-    content.innerHTML = `
-        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
-            <p class="font-medium text-amber-800">⚠️ ${escapeHtml(data.diagnosis)}</p>
-        </div>
-        <div class="bg-slate-50 rounded-xl p-4">
-            <h3 class="font-semibold mb-2">Рекомендации</h3>
-            <p class="text-slate-700 whitespace-pre-line">${escapeHtml(data.recommendations)}</p>
-        </div>
-    `;
+    let html = '';
+
+    if (data.ml && data.ml.predictions) {
+        const top = data.ml.predictions[0];
+        html += `<div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <p class="text-sm text-blue-600 font-medium">ML-модель предсказала:</p>
+            <p class="font-bold text-blue-900">${escapeHtml(top.class_name)} — ${(top.probability * 100).toFixed(1)}%</p>
+        </div>`;
+    }
+
+    html += `<div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+        <p class="font-medium text-amber-800">Диагноз: ${escapeHtml(data.diagnosis || 'требует уточнения')}</p>
+    </div>
+    <div class="bg-slate-50 rounded-xl p-4">
+        <h3 class="font-semibold mb-2">Рекомендации</h3>
+        <p class="text-slate-700 whitespace-pre-line">${escapeHtml(data.recommendations || 'Анализ выполнен')}</p>
+    </div>`;
+
+    content.innerHTML = html;
     showSection('results');
 }
 
@@ -143,10 +207,11 @@ document.getElementById('to-program-btn').addEventListener('click', () => {
     showSection('program');
 });
 
-// Программа
+// ─── Program ─────────────────────────────────────────────────────────────
 document.getElementById('next-day-btn').addEventListener('click', async () => {
+    if (!currentUser) return;
     try {
-        const res = await fetch(`${API_URL}/api/program/next?init_data=${encodeURIComponent(initData)}`, {
+        const res = await fetch(`${API_URL}/api/program/next?user_id=${currentUser.id}`, {
             method: 'POST',
         });
         const data = await res.json();
@@ -158,8 +223,9 @@ document.getElementById('next-day-btn').addEventListener('click', async () => {
 });
 
 async function loadProgram() {
+    if (!currentUser) return;
     try {
-        const res = await fetch(`${API_URL}/api/program/?init_data=${encodeURIComponent(initData)}`);
+        const res = await fetch(`${API_URL}/api/program/?user_id=${currentUser.id}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail);
         renderProgram(data);
@@ -173,15 +239,13 @@ function renderProgram(data) {
     document.getElementById('program-content').textContent = data.last_plan || 'Программа скоро появится...';
 }
 
-// Профиль
+// ─── Profile ─────────────────────────────────────────────────────────────
 async function loadProfile() {
+    if (!currentUser) return;
     try {
-        const res = await fetch(`${API_URL}/api/profile/?init_data=${encodeURIComponent(initData)}`);
+        const res = await fetch(`${API_URL}/api/profile/?user_id=${currentUser.id}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail);
-
-        document.getElementById('user-badge').textContent = data.user.name || data.user.username || 'Пользователь';
-        document.getElementById('user-badge').classList.remove('hidden');
 
         const analysesHtml = data.analyses.length
             ? '<ul class="divide-y divide-slate-100">' + data.analyses.map(a =>
@@ -192,8 +256,7 @@ async function loadProfile() {
         document.getElementById('profile-content').innerHTML = `
             <div class="flex justify-between"><span class="text-slate-500">Имя</span><span>${escapeHtml(data.user.name || '—')}</span></div>
             <div class="flex justify-between"><span class="text-slate-500">Username</span><span>${escapeHtml(data.user.username || '—')}</span></div>
-            <div class="flex justify-between"><span class="text-slate-500">Подписка</span><span class="capitalize">${escapeHtml(data.user.subscription)}</span></div>
-            <div class="mt-4"><h3 class="font-semibold mb-2">История</h3>${analysesHtml}</div>
+            <div class="mt-4"><h3 class="font-semibold mb-2">История анализов</h3>${analysesHtml}</div>
         `;
     } catch (err) {
         document.getElementById('profile-content').textContent = 'Ошибка загрузки профиля';
@@ -206,7 +269,3 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
-// При загрузке
-showSection('upload');
-if (initData) loadProfile();
