@@ -1,0 +1,20 @@
+/* Дополнительные стили для SkinCoach Web */
+
+#drop-zone.dragover {
+    border-color: #14b8a6;
+    background-color: #f0fdfa;
+}
+
+.nav-btn.active {
+    background-color: #14b8a6;
+    color: white;
+}
+
+section {
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
