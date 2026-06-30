@@ -36,6 +36,9 @@ OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
 VISION_M=os.getenv("VISION_MODEL","openai/gpt-4o-mini").strip()
 REASON_M=os.getenv("REASON_MODEL","arcee-ai/trinity-large-preview:free").strip()
 STRONG_M=os.getenv("STRONG_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
+REASONER_A_M=os.getenv("REASONER_A_MODEL","arcee-ai/trinity-large-preview:free").strip()
+REASONER_B_M=os.getenv("REASONER_B_MODEL","stepfun/step-3.5-flash:free").strip()
+JUDGE_M=os.getenv("JUDGE_MODEL","mistralai/mistral-small-3.1-24b-instruct:free").strip()
 VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemini-2.0-flash-001,nvidia/nemotron-nano-12b-v2-vl:free").split(",") if m.strip()]
 TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","meta-llama/llama-3.3-70b-instruct:free,stepfun/step-3.5-flash:free,arcee-ai/trinity-large-preview:free").split(",") if m.strip()]
 TEMP=float(os.getenv("TEMPERATURE","0.3"))
@@ -263,8 +266,8 @@ async def pipeline_photo(b64,cap,u):
         return "error","Не удалось проанализировать фото. Попробуй ещё раз."
     u["vision_data"]=vis
 
-    # STEP 3: Dermatology Reasoning
-    log.info("🔬 3/8 Reasoning...")
+    # STEP 3a: Dermatology Reasoning (Reasoner A)
+    log.info("🔬 3a/8 Reasoner A (дерматолог)...")
     rp3=rp("3_reasoning.txt","Дифференциальная диагностика. JSON.")
     prev_diag=u.get("diagnosis")
     prev_conf=u.get("reasoning_data",{}).get("confidence") if u.get("reasoning_data") else None
@@ -272,15 +275,32 @@ async def pipeline_photo(b64,cap,u):
         "previous_diagnosis":prev_diag if prev_diag else None,
         "previous_confidence":prev_conf},ensure_ascii=False)
     try:
-        reason=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
-            STRONG_M,TXT_FB,600)
+        reason_a=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
+            REASONER_A_M,TXT_FB,600)
     except Exception as e:
-        log.error(f"Reasoning fail: {e}")
-        reason={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
+        log.error(f"Reasoner A fail: {e}")
+        reason_a={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
                 "primary_diagnosis":"требуется уточнение","stage":"unknown","phase":"unknown",
                 "severity":"unknown","soap_safe":False,"confidence":0}
-    u["reasoning_data"]=reason
-    u["diagnosis"]=reason.get("primary_diagnosis","не определено")
+    u["reasoner_a"]=reason_a
+    u["diagnosis"]=reason_a.get("primary_diagnosis","не определено")
+
+    # STEP 3b: Psychosomatic Reasoning (Reasoner B)
+    log.info("🧠 3b/8 Reasoner B (кинезиолог)...")
+    rp3b=rp("reasoner_b_prompt.txt","Психосоматический анализ. JSON.")
+    ctx3b=json.dumps({"vision":vis,"reasoner_a":reason_a,"patient":uctx},ensure_ascii=False)
+    try:
+        reason_b=await cj([{"role":"system","content":rp3b},{"role":"user","content":ctx3b}],
+            REASONER_B_M,TXT_FB,500)
+    except Exception as e:
+        log.error(f"Reasoner B fail: {e}")
+        reason_b={"emotional_factor":"не удалось определить","psychosomatic_pattern":"нет данных",
+                  "stress_level":"unknown","recommendations":[]}
+    u["reasoner_b"]=reason_b
+
+    # Объединяем результаты A + B для передачи дальше
+    reason=json.dumps({"reasoner_a":reason_a,"reasoner_b":reason_b},ensure_ascii=False)
+    reason=reason_a  # совместимость со старыми шагами (4-7) которые ждут reasoning_data
 
     # STEP 4: Clinical Questions
     log.info("❓ 4/8 Questions...")
@@ -316,15 +336,16 @@ async def pipeline_final(u,answers_text=""):
         triage={"risk_level":"green","urgency":"routine"}
     u["risk"]=triage
 
-    # STEP 6: Recommendations
-    log.info("📋 6/8 Recommendations...")
+    # STEP 6: Recommendations (Reasoner A — дерматолог + нутрициолог)
+    log.info("📋 6/8 Recommendations (Reasoner A)...")
     rp6=rp("6_recommendations.txt","Составь рекомендации. JSON.")
     soap_note = "\n\nВАЖНО: пользователь пришёл с упаковки мыла SkinCoach (сера+дёготь). Обязательно включи soap_protocol: конкретную схему применения мыла — сколько раз в день, как долго держать пену, чем увлажнять после, когда сделать паузу." if u.get("source")=="soap" else ""
     ctx6=json.dumps({"all_data":json.loads(all_data) if isinstance(all_data,str) else all_data,
-        "triage":triage,"soap_user":u.get("source")=="soap"},ensure_ascii=False)+soap_note
+        "triage":triage,"soap_user":u.get("source")=="soap",
+        "reasoner_b":u.get("reasoner_b",{})},ensure_ascii=False)+soap_note
     try:
         recs=await cj([{"role":"system","content":rp6},{"role":"user","content":ctx6}],
-            STRONG_M,TXT_FB,800)
+            REASONER_A_M,TXT_FB,800)
     except Exception as e:
         log.error(f"Recs fail: {e}")
         recs={"diagnosis_summary":"Анализ выполнен","morning_routine":["Мягкое очищение"],
@@ -343,16 +364,17 @@ async def pipeline_final(u,answers_text=""):
     except:
         pass  # If safety check fails, proceed anyway
 
-    # STEP 8: Format Response
-    log.info("💬 8/8 Response...")
-    rp8=rp("8_response.txt","Собери ответ для Telegram.")
+    # STEP 8: Format Response (Judge — синтез A + B)
+    log.info("💬 8/8 Response (Judge)...")
+    rp8=rp("judge_prompt.txt","Синтезируй ответ для Telegram.")
     rp8=rp8.replace("{name}",nm).replace("{day}",str(dy)).replace("{week}",str(wk))
-    ctx8=json.dumps({"recommendations":recs,"triage":triage,"reasoning":reason,
-        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt,
+    ctx8=json.dumps({"recommendations":recs,"triage":triage,
+        "reasoner_a":u.get("reasoner_a",{}),"reasoner_b":u.get("reasoner_b",{}),
+        "reasoning":reason,"vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt,
         "soap_user":u.get("source")=="soap"},ensure_ascii=False)
     try:
         final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
-            REASON_M,TXT_FB,900)
+            JUDGE_M,TXT_FB,900)
     except Exception as e:
         log.error(f"Response fail: {e}")
         final=format_fallback(recs,reason,triage,u)
