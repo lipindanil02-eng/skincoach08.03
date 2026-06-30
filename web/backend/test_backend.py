@@ -39,6 +39,13 @@ def run_tests():
         assert r.status_code == 422
         print("OK analyze requires photo")
 
+        r = client.get("/api/analyze/debug")
+        assert r.status_code == 200
+        debug = r.json()
+        assert "llm_configured" in debug
+        assert "ml_service_status" in debug
+        print(f"OK debug (LLM: {debug['llm_configured']}, ML: {debug['ml_service_status']})")
+
         print("\nВсе тесты пройдены")
 
 

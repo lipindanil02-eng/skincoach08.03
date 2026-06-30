@@ -171,6 +171,14 @@ analyzeBtn.addEventListener('click', async () => {
         }
 
         showResults(data);
+
+        // Показываем warnings если есть
+        if (data.warnings && data.warnings.length) {
+            console.warn('Warnings:', data.warnings);
+            setTimeout(() => {
+                alert('⚠️ Внимание:\n' + data.warnings.join('\n'));
+            }, 500);
+        }
     } catch (err) {
         clearInterval(progressInterval);
         alert('Ошибка: ' + err.message);
