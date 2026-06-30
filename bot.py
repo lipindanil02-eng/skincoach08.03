@@ -34,13 +34,13 @@ load_dotenv()
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
 OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
 VISION_M=os.getenv("VISION_MODEL","openai/gpt-4o-mini").strip()
-REASON_M=os.getenv("REASON_MODEL","arcee-ai/trinity-large-preview:free").strip()
-STRONG_M=os.getenv("STRONG_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
-REASONER_A_M=os.getenv("REASONER_A_MODEL","arcee-ai/trinity-large-preview:free").strip()
-REASONER_B_M=os.getenv("REASONER_B_MODEL","stepfun/step-3.5-flash:free").strip()
-JUDGE_M=os.getenv("JUDGE_MODEL","mistralai/mistral-small-3.1-24b-instruct:free").strip()
+REASON_M=os.getenv("REASON_MODEL","openai/gpt-4o-mini").strip()
+STRONG_M=os.getenv("STRONG_MODEL","openai/gpt-4o-mini").strip()
+REASONER_A_M=os.getenv("REASONER_A_MODEL","openai/gpt-4o-mini").strip()
+REASONER_B_M=os.getenv("REASONER_B_MODEL","openai/gpt-4o-mini").strip()
+JUDGE_M=os.getenv("JUDGE_MODEL","openai/gpt-4o-mini").strip()
 VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemini-2.0-flash-001,nvidia/nemotron-nano-12b-v2-vl:free").split(",") if m.strip()]
-TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","meta-llama/llama-3.3-70b-instruct:free,stepfun/step-3.5-flash:free,arcee-ai/trinity-large-preview:free").split(",") if m.strip()]
+TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","google/gemini-2.0-flash-001,nvidia/nemotron-nano-12b-v2-vl:free").split(",") if m.strip()]
 TEMP=float(os.getenv("TEMPERATURE","0.3"))
 TOUT=int(os.getenv("TIMEOUT","120"))
 
