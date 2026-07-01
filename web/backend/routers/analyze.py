@@ -215,21 +215,17 @@ async def analyze_photo(
 @router.get("/test-ml")
 async def test_ml():
     """Тест ML-сервиса: шлёт тестовую картинку, возвращает результат."""
-    import io
     result = {"ml_service": {"url": ML_SERVICE_URL, "available": False}}
     
     if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
         result["ml_service"]["error"] = "not configured"
         return result
     
-    # Создаём тестовую картинку 1x1 пиксель
+    # Минимальный валидный JPEG (1x1 пиксель) в base64
+    import base64
+    minimal_jpeg_b64 = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8Af//Z"
     try:
-        from PIL import Image
-        img = Image.new("RGB", (300, 300), (200, 150, 130))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG")
-        img_bytes = buf.getvalue()
-        
+        img_bytes = base64.b64decode(minimal_jpeg_b64)
         async with httpx.AsyncClient(timeout=60) as client:
             files = {"file": ("test.jpg", img_bytes, "image/jpeg")}
             r = await client.post(f"{ML_SERVICE_URL}/predict", files=files)
@@ -243,8 +239,8 @@ async def test_ml():
                     result["ml_service"]["body"] = r.text[:500]
                 except:
                     pass
-    except ImportError:
-        result["error"] = "PIL not installed"
+    except httpx.TimeoutException:
+        result["ml_service"]["error"] = "timeout (модель ещё грузится)"
     except Exception as e:
         result["ml_service"]["error"] = f"{type(e).__name__}: {str(e)[:200]}"
     
