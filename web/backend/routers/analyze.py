@@ -34,18 +34,33 @@ LLM_AVAILABLE = bool(OR_KEY) and OR_KEY != ""
 
 
 async def call_ml_service(image_bytes: bytes) -> dict:
-    """Вызывает ML-сервис для предсказания по фото."""
+    """Вызывает ML-сервис для предсказания по фото.
+    Первый вызов триггерит загрузку модели (до 3 минут)."""
     if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
         return {"status": "skipped", "message": "ML_SERVICE_URL not configured"}
+    
+    # Сначала проверяем статус модели
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
+            cr = await client.get(f"{ML_SERVICE_URL}/")
+            if cr.status_code == 200:
+                info = cr.json()
+                if not info.get("model_loaded"):
+                    log.info("ML модель не загружена — запускаем загрузку")
+    except Exception:
+        pass
+    
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
             files = {"file": ("photo.jpg", image_bytes, "image/jpeg")}
             r = await client.post(f"{ML_SERVICE_URL}/predict", files=files)
             if r.status_code == 200:
                 return r.json()
+            if r.status_code == 503:
+                return {"status": "loading", "message": "Модель ещё грузится, попробуй через минуту"}
             return {"status": "error", "message": f"ML service: {r.status_code}"}
     except Exception as e:
-        return {"status": "error", "message": f"ML service unavailable: {e}"}
+        return {"status": "loading", "message": f"Модель грузится, попробуй через минуту ({type(e).__name__})"}
 
 
 @router.post("/")
@@ -57,7 +72,9 @@ async def analyze_photo(
     result = await db.execute(select(User).where(User.id == user_id))
     db_user = result.scalar_one_or_none()
     if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
+        db_user = User(id=user_id, name="user")
+        db.add(db_user)
+        await db.commit()
 
     contents = await photo.read()
     b64 = base64.b64encode(contents).decode("utf-8")
@@ -134,13 +151,19 @@ async def analyze_photo(
                 "confidence": int(ml_conf*100),
             }
         else:
-            # ML недоступен — vision OpenRouter не работает, возвращаем заглушку
-            diagnosis = "ML-сервис загружается, попробуй через 2-3 минуты"
-            recommendations = (
-                f"📸 Фото получено.\n\n"
-                f"ML-сервис сейчас запускается (качает модель с HuggingFace).\n"
-                f"Открой фото снова через 2-3 минуты — анализ заработает автоматически."
-            )
+            # ML недоступен — показываем что происходит
+            ml_msg = ml_result.get("message", "неизвестно")
+            ml_stat = ml_result.get("status", "unknown")
+            if ml_stat == "loading":
+                diagnosis = "⏳ Модель загружается"
+                recommendations = f"ML-модель скачивается с HuggingFace (~40 MB).\nЭто занимает 30-60 секунд при первом запуске.\n\nНажми 'Загрузить' снова через минуту — анализ заработает."
+            else:
+                diagnosis = "ML-сервис загружается, попробуй через 2-3 минуты"
+                recommendations = (
+                    f"📸 Фото получено.\n\n"
+                    f"ML-сервис сейчас запускается (качает модель с HuggingFace).\n"
+                    f"Открой фото снова через 2-3 минуты — анализ заработает автоматически."
+                )
             analysis = Analysis(
                 user_id=db_user.id,
                 photo_b64=b64[:200],

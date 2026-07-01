@@ -1,46 +1,13 @@
 // SkinCoach Web — фронтенд
 const API_URL = '';
 
-// ─── Auth state ───────────────────────────────────────────────────────────
-let currentUser = JSON.parse(localStorage.getItem('skincoach_user') || 'null');
+// ─── Auto-login ───────────────────────────────────────────────────────────
+let currentUser = { id: 1, name: 'user' };
 
-if (currentUser) {
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('app-screen').classList.remove('hidden');
-    document.getElementById('user-badge').textContent = currentUser.name || 'Пользователь';
-}
-
-// Login form
-document.getElementById('login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = document.getElementById('login-name').value.trim();
-    if (!name) return;
-    try {
-        const res = await fetch(`${API_URL}/api/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-        });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || 'Ошибка входа');
-        }
-        const data = await res.json();
-        currentUser = data.user;
-        localStorage.setItem('skincoach_user', JSON.stringify(currentUser));
-        document.getElementById('login-screen').classList.add('hidden');
-        document.getElementById('app-screen').classList.remove('hidden');
-        document.getElementById('user-badge').textContent = currentUser.name;
-    } catch (err) {
-        alert('Ошибка: ' + err.message);
-    }
-});
-
-// Logout
-document.getElementById('logout-btn').addEventListener('click', () => {
-    localStorage.removeItem('skincoach_user');
-    location.reload();
-});
+// Показываем приложение сразу, без логина
+document.getElementById('login-screen').classList.add('hidden');
+document.getElementById('app-screen').classList.remove('hidden');
+document.getElementById('user-badge').textContent = 'user';
 
 // ─── Navigation ───────────────────────────────────────────────────────────
 const sections = ['upload', 'results', 'program', 'profile'];
