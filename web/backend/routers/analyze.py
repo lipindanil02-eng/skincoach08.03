@@ -134,12 +134,35 @@ async def analyze_photo(
                 "confidence": int(ml_conf*100),
             }
         else:
-            # ML недоступен — пробуем vision пайплайн
-            result_type, result = await pipeline_photo(b64, photo.filename or "", pipeline_user)
-            if result_type == "ask_reshoot":
-                return {"status": "reshoot", "message": result, "ml": ml_result}
-            if result_type == "error":
-                return {"status": "error", "message": result, "ml": ml_result}
+            # ML недоступен — vision OpenRouter не работает, возвращаем заглушку
+            diagnosis = "ML-сервис загружается, попробуй через 2-3 минуты"
+            recommendations = (
+                f"📸 Фото получено.\n\n"
+                f"ML-сервис сейчас запускается (качает модель с HuggingFace).\n"
+                f"Открой фото снова через 2-3 минуты — анализ заработает автоматически."
+            )
+            analysis = Analysis(
+                user_id=db_user.id,
+                photo_b64=b64[:200],
+                vision_data={},
+                reasoning_data={},
+                diagnosis=diagnosis,
+                risk={},
+                recommendations=recommendations,
+                questions={},
+            )
+            db.add(analysis)
+            await db.commit()
+            return {
+                "status": "success",
+                "diagnosis": diagnosis,
+                "ml": ml_result,
+                "vision": {},
+                "reasoning": {},
+                "questions": {},
+                "recommendations": recommendations,
+                "warnings": ["ML service not ready yet"],
+            }
 
         final_text = await pipeline_final(pipeline_user, answers_text="")
 
