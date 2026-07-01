@@ -212,6 +212,45 @@ async def analyze_photo(
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
 
+@router.get("/test-ml")
+async def test_ml():
+    """Тест ML-сервиса: шлёт тестовую картинку, возвращает результат."""
+    import io
+    result = {"ml_service": {"url": ML_SERVICE_URL, "available": False}}
+    
+    if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
+        result["ml_service"]["error"] = "not configured"
+        return result
+    
+    # Создаём тестовую картинку 1x1 пиксель
+    try:
+        from PIL import Image
+        img = Image.new("RGB", (300, 300), (200, 150, 130))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        img_bytes = buf.getvalue()
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            files = {"file": ("test.jpg", img_bytes, "image/jpeg")}
+            r = await client.post(f"{ML_SERVICE_URL}/predict", files=files)
+            result["ml_service"]["status_code"] = r.status_code
+            if r.status_code == 200:
+                result["ml_service"]["available"] = True
+                result["ml_service"]["response"] = r.json()
+            else:
+                result["ml_service"]["error"] = f"HTTP {r.status_code}"
+                try:
+                    result["ml_service"]["body"] = r.text[:500]
+                except:
+                    pass
+    except ImportError:
+        result["error"] = "PIL not installed"
+    except Exception as e:
+        result["ml_service"]["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    
+    return result
+
+
 @router.get("/debug")
 async def debug_status():
     """Диагностика: что работает на сервере."""
