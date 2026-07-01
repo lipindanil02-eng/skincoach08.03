@@ -121,14 +121,6 @@ def load_model() -> None:
     ])
 
 
-@app.on_event("startup")
-async def startup_event():
-    try:
-        load_model()
-    except Exception as e:
-        log.error(f"Не удалось загрузить модель при старте: {e}")
-
-
 @app.get("/")
 async def root():
     return {
@@ -136,21 +128,35 @@ async def root():
         "model_loaded": model is not None,
         "num_classes": len(class_map),
         "device": DEVICE,
+        "status": "ready" if model is not None else "model not loaded (call /predict to trigger)",
     }
 
 
 @app.get("/health")
 async def health():
     if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+        return {"status": "starting", "detail": "Model not loaded yet, call /predict to load"}
     return {"status": "ok"}
+
+
+async def ensure_model():
+    """Ленивая загрузка модели при первом запросе."""
+    global model
+    if model is None:
+        log.info("🔄 Ленивая загрузка модели...")
+        try:
+            load_model()
+        except Exception as e:
+            log.error(f"Ошибка загрузки модели: {e}")
+            raise HTTPException(status_code=500, detail=f"Model load failed: {e}")
 
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """Принимает изображение, возвращает top-3 предсказания."""
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    """Принимает изображение, возвращает top-3 предсказания.
+    Модель загружается лениво при первом вызове (не при старте сервера).
+    """
+    await ensure_model()
 
     try:
         import torch
