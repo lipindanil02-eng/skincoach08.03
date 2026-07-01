@@ -34,22 +34,30 @@ LLM_AVAILABLE = bool(OR_KEY) and OR_KEY != ""
 
 
 async def call_ml_service(image_bytes: bytes) -> dict:
-    """Вызывает ML-сервис для предсказания по фото.
-    Первый вызов триггерит загрузку модели (до 3 минут)."""
+    """Вызывает ML-сервис. Если модель не загружена — триггерит загрузку и сразу возвращает."""
     if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
         return {"status": "skipped", "message": "ML_SERVICE_URL not configured"}
     
-    # Сначала проверяем статус модели
+    # Проверяем статус модели
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=5) as client:
             cr = await client.get(f"{ML_SERVICE_URL}/")
             if cr.status_code == 200:
                 info = cr.json()
                 if not info.get("model_loaded"):
-                    log.info("ML модель не загружена — запускаем загрузку")
+                    # Модель не загружена — триггерим загрузку коротким вызовом
+                    log.info("ML модель не загружена — триггерим загрузку в фоне")
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client2:
+                            files = {"file": ("trigger.jpg", image_bytes[:100], "image/jpeg")}
+                            await client2.post(f"{ML_SERVICE_URL}/predict", files=files)
+                    except Exception:
+                        pass  # Ожидаемо — таймаут, но загрузка идёт
+                    return {"status": "loading", "message": "Модель грузится, попробуй через 30 секунд"}
     except Exception:
         pass
     
+    # Модель готова — делаем предсказание
     try:
         async with httpx.AsyncClient(timeout=180) as client:
             files = {"file": ("photo.jpg", image_bytes, "image/jpeg")}
