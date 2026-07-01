@@ -232,6 +232,7 @@ async def debug_status():
         ml_status = "not_configured"
 
     return {
+        "version": "v8",
         "llm_configured": LLM_AVAILABLE,
         "llm_models": {
             "vision": core_pipeline.VISION_M,
@@ -245,4 +246,5 @@ async def debug_status():
         "ml_service_url": ML_SERVICE_URL,
         "ml_service_status": ml_status,
         "ml_service_info": ml_info,
+        "ml_loading": ml_status == "ok" and not ml_info.get("model_loaded"),
     }
