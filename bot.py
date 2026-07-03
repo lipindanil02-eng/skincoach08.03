@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,ContextTypes,filters
+from telegram.request import HTTPXRequest
 
 load_dotenv()
 
@@ -1571,7 +1572,8 @@ def main():
             first=3600        # первый запуск через 1 час после старта
         )
         log.info(f"Scheduler: daily at {notify_hour}:00 UTC, reengagement every 12h")
-    app=ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    req = HTTPXRequest(http_version="1.1", connect_timeout=30, read_timeout=30, write_timeout=30, pool_timeout=30)
+    app=ApplicationBuilder().token(TOKEN).post_init(post_init).request(req).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("face",cmd_face))
