@@ -2,46 +2,26 @@
 SkinCoach v7 — 8-слойный пайплайн + уточняющие вопросы + 28-дневная программа
 """
 import tempfile, os
-try:
-    from inference import predict_image
-    INFERENCE_AVAILABLE = True
-except Exception as _inf_err:
-    predict_image = None
-    INFERENCE_AVAILABLE = False
-    import logging as _l; _l.getLogger("skincoach").warning(f"inference not available: {_inf_err}")
-from gamification import (ensure_fields, on_first_photo, update_streak,
-    on_program_complete, on_referral_success, on_detailed_answer,
-    format_achievements, format_leaderboard, format_skinrank,
-    on_regular_photo_score, on_compete_photo, can_compete_today,
-    add_points, award_badge, POINTS)
-from payments import (is_access_allowed, can_ask_question, use_question,
-                      apply_migration_defaults, PAYWALL_MESSAGE,
-                      activate_subscription, revoke_subscription,
-                      is_trial_active, days_left_trial, MAX_QUESTIONS_PER_WEEK)
-from competition import generate_challenge_code, verify_liveness_response
+from inference import predict_image
 import asyncio,json,os,sys,base64,logging
-from datetime import datetime, time as dtime
+from datetime import datetime
 from pathlib import Path
 from typing import Any,Dict,List
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,CallbackQueryHandler,ContextTypes,filters
-from telegram.request import HTTPXRequest
+from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
 
 load_dotenv()
 
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
 OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
-VISION_M=os.getenv("VISION_MODEL","openai/gpt-4o-mini").strip()
-REASON_M=os.getenv("REASON_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
-STRONG_M=os.getenv("STRONG_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
-REASONER_A_M=os.getenv("REASONER_A_MODEL","meta-llama/llama-3.3-70b-instruct:free").strip()
-REASONER_B_M=os.getenv("REASONER_B_MODEL","qwen/qwen3-next-80b-a3b-instruct:free").strip()
-JUDGE_M=os.getenv("JUDGE_MODEL","openai/gpt-oss-120b:free").strip()
-VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemma-4-31b-it:free,google/gemma-4-26b-a4b-it:free").split(",") if m.strip()]
-TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","qwen/qwen3-next-80b-a3b-instruct:free,openai/gpt-oss-120b:free,nvidia/nemotron-3-super-120b-a12b:free").split(",") if m.strip()]
+VISION_M=os.getenv("VISION_MODEL","google/gemini-2.0-flash-lite-001").strip()
+REASON_M=os.getenv("REASON_MODEL","google/gemini-2.0-flash-lite-001").strip()
+STRONG_M=os.getenv("STRONG_MODEL","google/gemini-2.5-flash-preview").strip()
+VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemini-2.5-flash-preview").split(",") if m.strip()]
+TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","google/gemini-2.5-flash-preview,arcee-ai/trinity-large-preview:free").split(",") if m.strip()]
 TEMP=float(os.getenv("TEMPERATURE","0.3"))
 TOUT=int(os.getenv("TIMEOUT","120"))
 
@@ -50,68 +30,6 @@ log=logging.getLogger("skincoach")
 
 # States
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
-S_LABS="labs"
-S_COMPETE="compete"
-S_FACE="face"
-
-# Labs — списки анализов
-LABS_BASE=[
-    "ОАК (общий анализ крови)",
-    "СОЭ и CRP (воспаление)",
-    "Витамин D",
-    "Цинк",
-    "IgE общий",
-    "Гистамин",
-    "Копрограмма",
-    "Анализ на паразитов (3-кратный)",
-    "Дисбактериоз",
-    "Ревматоидный фактор (RF)",
-]
-
-DIAGNOSIS_NORM={
-    "меланом":"melanoma","melanoma":"melanoma",
-    "невус":"nevus","родинк":"nevus","nevus":"nevus",
-    "акне":"acne","прыщ":"acne","угрев":"acne","acne":"acne",
-    "атоп":"atopy","экзем":"atopy","atopy":"atopy",
-    "себоре":"seborrhea","seborrhea":"seborrhea",
-}
-
-LABS_BY_DIAGNOSIS={
-    "melanoma":["Онкомаркеры (LDH, S100B)","Биопсия (консультация дерматолога)"],
-    "nevus":["Дерматоскопия (консультация)"],
-    "acne":["ДГЭАС, тестостерон, ЛГ/ФСГ (гормоны)","Глюкоза, инсулин (сахар)"],
-    "atopy":["Специфические IgE (аллергопанель)","Панель пищевой непереносимости"],
-    "seborrhea":["ТТГ, Т3, Т4 (щитовидная)","Ферритин"],
-    "other":["Ферритин","ТТГ"],
-}
-
-def normalize_diagnosis(text:str)->str:
-    # Note: DIAGNOSIS_NORM is checked in insertion order — first match wins.
-    # More specific keywords should come before shorter/broader ones.
-    t=(text or "").lower()
-    for kw,key in DIAGNOSIS_NORM.items():
-        if kw in t: return key
-    return "other"
-
-def format_labs_message(diagnosis:str)->str:
-    dk=normalize_diagnosis(diagnosis)
-    base="\n".join(f"• {x}" for x in LABS_BASE)
-    extras=LABS_BY_DIAGNOSIS.get(dk,[])
-    extra_text=""
-    if extras:
-        extra_text=f"\n\n⚠️ Дополнительно для твоего диагноза:\n"+"\n".join(f"• {x}" for x in extras)
-    urgent=""
-    if dk=="melanoma":
-        urgent="\n\n🚨 ВАЖНО: При подозрении на меланому — обратись к дерматологу немедленно, не откладывай!"
-    return (
-        "🔬 По твоему диагнозу рекомендую сдать:\n\n"
-        f"📋 Базовые (важны для всех):\n{base}"
-        f"{extra_text}"
-        f"{urgent}\n\n"
-        "Уже есть готовые анализы? Пришли фото бланка или напиши значения\n"
-        "(пример: D=18, цинк=7.2, IgE=145)\n\n"
-        "Нет анализов пока — напиши пропустить"
-    )
 
 WEEKS={1:"ПИТАНИЕ — убираем провокаторы",2:"НАРУЖНЫЙ УХОД — мыло, масло, крем",
        3:"ЭМОЦИИ — стресс-протокол",4:"АНАЛИЗЫ — контроль и коррекция"}
@@ -126,18 +44,6 @@ FOCUSES={
     4:{1:"Запись: ОАК, D, ферритин, ТТГ",2:"Копрограмма",3:"Цинк и селен",
        4:"Расшифровка результатов",5:"Коррекция добавок",6:"Персональный протокол",7:"Финальное фото"},
 }
-
-def score_bar(pct: int) -> str:
-    """Return 10-char progress bar for a 0-100 score."""
-    filled = min(10, max(0, pct // 10))
-    return "█" * filled + "░" * (10 - filled)
-
-def score_grade(pct: int) -> str:
-    if pct >= 90: return "Отличная"
-    if pct >= 75: return "Хорошая"
-    if pct >= 60: return "Средняя"
-    if pct >= 45: return "Требует внимания"
-    return "Нужна программа"
 
 # Utils
 def rp(f,d=""):
@@ -165,14 +71,13 @@ def xj(t):
         except: pass
     raise ValueError(f"No JSON: {t[:300]}")
 
-# History — хранить в /data/ если задан HIST_PATH (Railway Volume), иначе локально
-HIST=os.getenv("HIST_PATH","history.json")
+# History
+HIST="history.json"
 def lh():
     if os.path.exists(HIST):
         try:
-            data=json.load(open(HIST,"r",encoding="utf-8"))
-            if isinstance(data,dict): return data
-        except: pass
+            with open(HIST,"r",encoding="utf-8") as f: return json.load(f)
+        except: return {}
     return {}
 def sh(h):
     try:
@@ -183,26 +88,9 @@ def gu(h,uid):
     if u not in h: h[u]={"state":S_NAME,"name":None,"duration":None,"tried":None,
         "vision_data":None,"reasoning_data":None,"diagnosis":None,"risk":None,
         "recommendations":None,"pending_questions":None,"photo_b64":None,
-        "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat(),
-        "last_active":datetime.now().isoformat(),"last_reengagement":None,
-        "labs_raw":None,"labs_submitted_at":None}
-    h[u]=ensure_fields(h[u])
-    # Migration for existing users (ensure_fields doesn't know about labs fields)
-    if "labs_raw" not in h[u]: h[u]["labs_raw"]=None
-    if "labs_submitted_at" not in h[u]: h[u]["labs_submitted_at"]=None
-    apply_migration_defaults(h[u])
+        "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat()}
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
-
-def check_access(u,tg_user):
-    """Return True for admins or users with valid trial/subscription."""
-    if tg_user:
-        if tg_user.username and tg_user.username.lower()=="kinesispro":
-            return True
-        admin_id=os.getenv("ADMIN_ID","").strip()
-        if admin_id and str(tg_user.id)==admin_id:
-            return True
-    return is_access_allowed(u)
 
 # API
 def hdr(): return {"Authorization":f"Bearer {OR_KEY}","Content-Type":"application/json",
@@ -267,41 +155,20 @@ async def pipeline_photo(b64,cap,u):
         return "error","Не удалось проанализировать фото. Попробуй ещё раз."
     u["vision_data"]=vis
 
-    # STEP 3a: Dermatology Reasoning (Reasoner A)
-    log.info("🔬 3a/8 Reasoner A (дерматолог)...")
+    # STEP 3: Dermatology Reasoning
+    log.info("🔬 3/8 Reasoning...")
     rp3=rp("3_reasoning.txt","Дифференциальная диагностика. JSON.")
-    prev_diag=u.get("diagnosis")
-    prev_conf=u.get("reasoning_data",{}).get("confidence") if u.get("reasoning_data") else None
-    ctx3=json.dumps({"vision":vis,"patient":uctx,
-        "previous_diagnosis":prev_diag if prev_diag else None,
-        "previous_confidence":prev_conf},ensure_ascii=False)
+    ctx3=json.dumps({"vision":vis,"patient":uctx},ensure_ascii=False)
     try:
-        reason_a=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
-            REASONER_A_M,TXT_FB,600)
+        reason=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
+            STRONG_M,TXT_FB,600)
     except Exception as e:
-        log.error(f"Reasoner A fail: {e}")
-        reason_a={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
+        log.error(f"Reasoning fail: {e}")
+        reason={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
                 "primary_diagnosis":"требуется уточнение","stage":"unknown","phase":"unknown",
                 "severity":"unknown","soap_safe":False,"confidence":0}
-    u["reasoner_a"]=reason_a
-    u["diagnosis"]=reason_a.get("primary_diagnosis","не определено")
-
-    # STEP 3b: Psychosomatic Reasoning (Reasoner B)
-    log.info("🧠 3b/8 Reasoner B (кинезиолог)...")
-    rp3b=rp("reasoner_b_prompt.txt","Психосоматический анализ. JSON.")
-    ctx3b=json.dumps({"vision":vis,"reasoner_a":reason_a,"patient":uctx},ensure_ascii=False)
-    try:
-        reason_b=await cj([{"role":"system","content":rp3b},{"role":"user","content":ctx3b}],
-            REASONER_B_M,TXT_FB,500)
-    except Exception as e:
-        log.error(f"Reasoner B fail: {e}")
-        reason_b={"emotional_factor":"не удалось определить","psychosomatic_pattern":"нет данных",
-                  "stress_level":"unknown","recommendations":[]}
-    u["reasoner_b"]=reason_b
-
-    # Сохраняем reasoner_a как reasoning_data для совместимости со шагами 4-7
-    u["reasoning_data"]=reason_a
-    reason=reason_a
+    u["reasoning_data"]=reason
+    u["diagnosis"]=reason.get("primary_diagnosis","не определено")
 
     # STEP 4: Clinical Questions
     log.info("❓ 4/8 Questions...")
@@ -337,16 +204,14 @@ async def pipeline_final(u,answers_text=""):
         triage={"risk_level":"green","urgency":"routine"}
     u["risk"]=triage
 
-    # STEP 6: Recommendations (Reasoner A — дерматолог + нутрициолог)
-    log.info("📋 6/8 Recommendations (Reasoner A)...")
+    # STEP 6: Recommendations
+    log.info("📋 6/8 Recommendations...")
     rp6=rp("6_recommendations.txt","Составь рекомендации. JSON.")
-    soap_note = "\n\nВАЖНО: пользователь пришёл с упаковки мыла SkinCoach (сера+дёготь). Обязательно включи soap_protocol: конкретную схему применения мыла — сколько раз в день, как долго держать пену, чем увлажнять после, когда сделать паузу." if u.get("source")=="soap" else ""
     ctx6=json.dumps({"all_data":json.loads(all_data) if isinstance(all_data,str) else all_data,
-        "triage":triage,"soap_user":u.get("source")=="soap",
-        "reasoner_b":u.get("reasoner_b",{})},ensure_ascii=False)+soap_note
+        "triage":triage},ensure_ascii=False)
     try:
         recs=await cj([{"role":"system","content":rp6},{"role":"user","content":ctx6}],
-            REASONER_A_M,TXT_FB,800)
+            STRONG_M,TXT_FB,800)
     except Exception as e:
         log.error(f"Recs fail: {e}")
         recs={"diagnosis_summary":"Анализ выполнен","morning_routine":["Мягкое очищение"],
@@ -365,20 +230,15 @@ async def pipeline_final(u,answers_text=""):
     except:
         pass  # If safety check fails, proceed anyway
 
-    # STEP 8: Format Response (Judge — синтез A + B)
-    log.info("💬 8/8 Response (Judge)...")
-    rp8=rp("judge_prompt.txt","Синтезируй ответ для Telegram.")
+    # STEP 8: Format Response
+    log.info("💬 8/8 Response...")
+    rp8=rp("8_response.txt","Собери ответ для Telegram.")
     rp8=rp8.replace("{name}",nm).replace("{day}",str(dy)).replace("{week}",str(wk))
-    ctx8=json.dumps({"recommendations":recs,"triage":triage,
-        "reasoner_a":u.get("reasoner_a",{}),"reasoner_b":u.get("reasoner_b",{}),
-        "reasoning":reason,"vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt,
-        "soap_user":u.get("source")=="soap"},ensure_ascii=False)
+    ctx8=json.dumps({"recommendations":recs,"triage":triage,"reasoning":reason,
+        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt},ensure_ascii=False)
     try:
-        judge_result=await cj([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
-            JUDGE_M,TXT_FB,900)
-        final=judge_result.get("final_answer","") if isinstance(judge_result,dict) else str(judge_result)
-        if not final:
-            final=format_fallback(recs,reason,triage,u)
+        final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
+            REASON_M,TXT_FB,900)
     except Exception as e:
         log.error(f"Response fail: {e}")
         final=format_fallback(recs,reason,triage,u)
@@ -419,87 +279,42 @@ async def send(msg,txt):
 # ════════════════════════════════════
 #  HANDLERS
 # ════════════════════════════════════
-SOAP_WELCOME = (
-    "Привет! 👋\n\n"
-    "Ты сканировал QR-код с упаковки мыла SkinCoach.\n\n"
-    "Это мыло с серой и дёгтем — мощное средство. Но чтобы оно помогло, "
-    "а не навредило — важно знать твой этап обострения.\n\n"
-    "Я — ИИ-ассистент на базе 8-летнего опыта кинезиолога. "
-    "За 2 минуты я:\n"
-    "✅ Проанализирую твою кожу по фото\n"
-    "✅ Выдам точную схему применения мыла на 14 дней\n"
-    "✅ Дам диету, чтобы убрать зуд изнутри\n\n"
-    "Всё это — бесплатно.\n\n"
-    "Как тебя зовут?"
-)
-
 async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    # Handle referral link: /start REF_12345
-    args = ctx.args
-    # Handle soap QR flow: /start soap
-    if args and args[0].lower() == "soap":
-        u["source"] = "soap"
-        h[str(uid)]["state"] = S_NAME
-        h[str(uid)]["msgs"] = []
-        sh(h)
-        await upd.message.reply_text(SOAP_WELCOME)
-        return
-    if args and args[0].startswith("REF_"):
-        ref_code = args[0]
-        referrer_uid = None
-        for ruid, ru in h.items():
-            if ru.get("ref_code") == ref_code and ruid != str(uid):
-                referrer_uid = ruid
-                break
-        if referrer_uid and not u.get("ref_by"):
-            u["ref_by"] = referrer_uid
-            u["discount_pct"] = 50
-            h[referrer_uid]["ref_count"] = h[referrer_uid].get("ref_count",0) + 1
-            h[referrer_uid]["discount_pct"] = 50
-            h[referrer_uid]["bonus_days"] = h[referrer_uid].get("bonus_days",0) + 7
-            try:
-                await ctx.bot.send_message(int(referrer_uid),
-                    "🎉 Друг зарегистрировался по твоей ссылке!\n"
-                    "+7 дней к пробному периоду начислены!\n"
-                    "Твоя скидка 50% активирована — используй /subscribe.")
-            except Exception as e:
-                log.warning(f"ref notify fail: {e}")
-    h[str(uid)]["state"]=S_NAME
-    h[str(uid)]["msgs"]=[]
+    h=lh();uid=str(upd.effective_user.id)
+    h[uid]=gu(h,upd.effective_user.id)
+    h[uid]["state"]=S_NAME;h[uid]["msgs"]=[]
     sh(h)
-    await upd.message.reply_text("Привет! Я SkinCoach — твой персональный ИИ-коуч по коже.\nКак тебя зовут?")
+    await upd.message.reply_text(
+        "🔬 Бесплатный AI-анализ кожи по фото.\n\n"
+        "Я определяю акне, экзему, псориаз, дерматит и ещё 50+ состояний.\n"
+        "8-ступенчатый анализ + программа ухода 28 дней.\n\n"
+        "Для начала — как тебя зовут?")
+    # Share button on start
+    share_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👥 Пригласить друга", url="https://t.me/share/url?url=https://t.me/Bottestvghh_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
+    ]])
+    await upd.message.reply_text("Знаешь кого-то с проблемами кожи? Поделись ботом 👇", reply_markup=share_kb)
 
 async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
-    u["last_active"]=datetime.now().isoformat()
     await upd.message.chat.send_action(ChatAction.TYPING)
 
     # Onboarding
     if u["state"]==S_NAME:
         u["name"]=txt.strip();u["state"]=S_DUR;sh(h)
-        await upd.message.reply_text(f"{u['name']}, расскажи о своей коже — есть проблемы или просто хочешь улучшить состояние? И как давно замечаешь?")
+        await upd.message.reply_text(f"{u['name']}, какая у тебя проблема с кожей и как давно беспокоит?")
         return
     if u["state"]==S_DUR:
         u["duration"]=txt.strip();u["state"]=S_TRIED;sh(h)
-        await upd.message.reply_text("Что уже пробовал(а) для кожи? Кремы, мази, диеты, или ничего особенного?")
+        await upd.message.reply_text("Что уже пробовал(а)? Мази, диеты, народные средства, фототерапия?")
         return
     if u["state"]==S_TRIED:
         u["tried"]=txt.strip();u["state"]=S_PHOTO;sh(h)
-        if u.get("source") == "soap":
-            await upd.message.reply_text(
-                f"Отлично, {u['name']}!\n\n"
-                "📸 Теперь пришли фото кожи — того участка, где планируешь применять мыло.\n"
-                "Дневной свет, крупный план.\n\n"
-                "На основе анализа я дам точную схему применения мыла:\n"
-                "сколько раз в день, как долго держать, чем увлажнять после.")
-        else:
-            await upd.message.reply_text(
-                f"Отлично, {u['name']}.\n\n📸 Отправь фото проблемного участка.\n"
-                "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
+        await upd.message.reply_text(
+            f"Отлично, {u['name']}.\n\n📸 Отправь фото проблемного участка.\n"
+            "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
         return
     if u["state"]==S_PHOTO:
-        sh(h)
         await upd.message.reply_text(f"{u.get('name','')}, мне нужно фото. 📸")
         return
 
@@ -514,84 +329,14 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             reply=f"Ошибка генерации плана. Попробуй /next"; log.error(f"Final:{e}")
         u["msgs"].append({"role":"user","content":txt})
         u["msgs"].append({"role":"assistant","content":reply})
-        u["msgs"]=tm(u["msgs"])
+        u["msgs"]=tm(u["msgs"]);sh(h)
         try: await st.delete()
         except: pass
-        # Try to parse 3-part JSON response
-        try:
-            parsed = json.loads(reply) if isinstance(reply,str) and reply.strip().startswith("{") else None
-            if isinstance(parsed, dict) and "msg1" in parsed:
-                await send(upd.message, parsed["msg1"])
-                if parsed.get("msg2"):
-                    await asyncio.sleep(0.5)
-                    await send(upd.message, parsed["msg2"])
-                if parsed.get("msg3"):
-                    await asyncio.sleep(0.5)
-                    await send(upd.message, parsed["msg3"])
-            else:
-                await send(upd.message, reply)
-        except Exception:
-            await send(upd.message, reply)
-        # Offer lab tests after diagnosis (skip for healthy skin)
-        if u.get("diagnosis","").lower() != "здоровая кожа":
-            labs_msg=format_labs_message(u.get("diagnosis",""))
-            u["state"]=S_LABS;sh(h)
-            await upd.message.reply_text(labs_msg)
-        else:
-            sh(h)
+        await send(upd.message,reply)
         return
-
-    # Labs input
-    if u["state"]==S_LABS:
-        t_lower=txt.strip().lower()
-        # Exit without saving
-        if any(kw in t_lower for kw in ("пропустить","skip","нет","не сейчас","позже")):
-            u["state"]=S_ACTIVE;sh(h)
-            await upd.message.reply_text("Хорошо, продолжай программу! Когда сдашь анализы — напиши /labs")
-            if u.get("notify_daily") is None:
-                await ask_notify_preference(upd.message)
-            return
-        # Looks like lab results (digits, = or :, or keywords)
-        has_numbers=any(c.isdigit() for c in txt)
-        has_separator=("=" in txt or ":" in txt)
-        has_keywords=any(kw in t_lower for kw in ("витамин","цинк","ферритин","ттг","иге","igg","соэ","crp","ige"))
-        if has_numbers or has_separator or has_keywords:
-            u["labs_raw"]=txt.strip()
-            u["labs_submitted_at"]=datetime.now().isoformat()
-            u["state"]=S_ACTIVE;sh(h)
-            st2=await upd.message.reply_text("Принял анализы. Интерпретирую... ⏳")
-            await interpret_labs(u,upd.message)
-            try: await st2.delete()
-            except: pass
-            if u.get("notify_daily") is None:
-                await ask_notify_preference(upd.message)
-            return
-        # Unknown message — prompt user
-        await upd.message.reply_text(
-            "Пришли фото бланка, напиши значения (D=18, цинк=7) или напиши пропустить")
-        return
-
-    if u["state"]==S_COMPETE:
-        code=u.get("challenge_code","????")
-        await upd.message.reply_text(
-            f"Жду фото с кодом {code} на бумажке. "
-            "Отправь фото или напиши /start чтобы выйти.")
-        sh(h); return
 
     # Active program - chat
     if u["state"]==S_ACTIVE:
-        # Free users after trial: 3 questions/week limit
-        if not check_access(u, upd.effective_user):
-            if not can_ask_question(u):
-                await upd.message.reply_text(
-                    "💬 Ты использовал 3 вопроса на этой неделе.\n"
-                    "Безлимитный чат — в подписке.\n\n"
-                    + PAYWALL_MESSAGE
-                )
-                sh(h)
-                return
-            use_question(u)
-            sh(h)
         u["msgs"].append({"role":"user","content":txt});u["msgs"]=tm(u["msgs"])
         wt=WEEKS.get(u["week"],"Программа")
         diag=(u.get("diagnosis") or "не определено")[:200]
@@ -602,10 +347,6 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         msgs=[{"role":"system","content":cp}]+u["msgs"]
         try: reply=await ct(msgs,REASON_M,TXT_FB,600)
         except: reply="Модели заняты. Через минуту."
-        # Gamification: бонус за детальный ответ
-        u, det_notifs = on_detailed_answer(u, len(txt))
-        if det_notifs:
-            reply += "\n" + "".join(det_notifs)
         u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
         await send(upd.message,reply)
         return
@@ -613,83 +354,10 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     u["state"]=S_NAME;sh(h)
     await upd.message.reply_text("Как тебя зовут?")
 
-async def interpret_labs(u, msg):
-    """Call 4b_labs.txt prompt and send interpretation to user"""
-    labs_raw=u.get("labs_raw","")
-    if not labs_raw: return
-    pr=rp("4b_labs.txt","Интерпретируй анализы.")
-    pr=pr.replace("{name}",u.get("name","друг"))
-    pr=pr.replace("{diagnosis}",u.get("diagnosis","не определено"))
-    pr=pr.replace("{duration}",u.get("duration","?"))
-    pr=pr.replace("{labs_raw}",labs_raw)
-    try:
-        reply=await ct([{"role":"system","content":pr},
-            {"role":"user","content":"Интерпретируй мои анализы."}],
-            REASON_M,TXT_FB,800)
-    except Exception as e:
-        log.error(f"interpret_labs fail: {e}")
-        reply="Не удалось интерпретировать анализы. Попробуй позже или задай вопрос текстом."
-    await send(msg,reply)
-
-async def check_liveness(b64: str, code: str) -> bool:
-    """Call vision model to verify challenge code is visible in photo."""
-    prompt = (f'Is the handwritten number {code} visible on paper or a hand in this photo? '
-              f'Reply JSON only: {{"code_visible": true}}  or  {{"code_visible": false}}')
-    try:
-        raw = await call_raw(
-            [{"role":"system","content":"You verify if a specific number is handwritten in a photo."},
-             {"role":"user","content":[
-                 {"type":"text","text":prompt},
-                 {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
-             ]}],
-            VISION_M, VIS_FB, mt=100)
-        return verify_liveness_response(raw, code)
-    except Exception as e:
-        log.warning(f"Liveness check failed: {e}")
-        return False
-
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    # Route /face photos to dedicated handler
-    if u["state"] == S_FACE:
-        await handle_face_photo(upd, ctx)
-        return
-    is_compete_photo=(u["state"]==S_COMPETE)
     if u["state"] in (S_NAME,S_DUR,S_TRIED):
         await upd.message.reply_text("Сначала познакомимся. /start"); return
-
-    # If waiting for labs — do OCR, not skin diagnosis
-    if u["state"]==S_LABS:
-        st=await upd.message.reply_text("🔬 Читаю бланк анализов... ⏳")
-        await upd.message.chat.send_action(ChatAction.TYPING)
-        try:
-            ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-            b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-            ocr_prompt="Это фото бланка лабораторных анализов. Извлеки все показатели и их значения в формате: Название = значение единица. Только показатели, без лишнего текста."
-            raw=await call_raw([{"role":"system","content":ocr_prompt},
-                {"role":"user","content":[{"type":"text","text":"Извлеки показатели"},
-                    {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
-                VISION_M,VIS_FB,500)
-            u["labs_raw"]=raw.strip()
-            u["labs_submitted_at"]=datetime.now().isoformat()
-        except Exception as e:
-            log.error(f"Labs OCR fail: {e}")
-            try: await st.delete()
-            except: pass
-            await upd.message.reply_text("Не удалось прочитать бланк. Напиши значения текстом (D=18, цинк=7.2)")
-            sh(h); return
-        try: await st.delete()
-        except: pass
-        u["state"]=S_ACTIVE
-        sh(h)
-        await upd.message.reply_text(f"Прочитал анализы:\n{u['labs_raw']}\n\nИнтерпретирую... ⏳")
-        await interpret_labs(u,upd.message)
-        return
-
-    # Access gate — not for face photos (S_FACE handled separately)
-    if u.get("state") != "face" and not check_access(u, upd.effective_user):
-        await upd.message.reply_text(PAYWALL_MESSAGE)
-        return
 
     st=await upd.message.reply_text(
         "📸 Фото получено. Запускаю 8-ступенчатый анализ...\n\n"
@@ -698,64 +366,27 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "30-60 сек ⏳")
     await upd.message.chat.send_action(ChatAction.TYPING)
 
-    result_type=None
+    ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
+    b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
+
+    # Локальная модель
+    import tempfile, os
+    from inference import predict_image
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(b)
+        tmp_path = tmp.name
     try:
-        ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-        b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-
-        # Локальная модель
-        if INFERENCE_AVAILABLE and predict_image:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp.write(b)
-                tmp_path = tmp.name
-            try:
-                skin_result = predict_image(tmp_path)
-                u["local_model_result"] = skin_result
-            except Exception as e:
-                log.warning(f"Local model skip: {e}")
-                u["local_model_result"] = None
-            finally:
-                try: os.unlink(tmp_path)
-                except: pass
-        else:
-            u["local_model_result"] = None
-
-        # Competition liveness check
-        if u["state"]==S_COMPETE:
-            code=u.get("challenge_code","????")
-            code_ok=await check_liveness(b64,code)
-            if not code_ok:
-                retries=u.get("compete_retry_count",0)+1
-                u["compete_retry_count"]=retries
-                if retries>=3:
-                    u["state"]=S_ACTIVE
-                    sh(h)
-                    try: await st.delete()
-                    except: pass
-                    await upd.message.reply_text("Превышен лимит попыток. Попробуй /compete завтра.")
-                else:
-                    sh(h)
-                    try: await st.delete()
-                    except: pass
-                    await upd.message.reply_text(
-                        f"Код не найден. Убедись что цифры {code} видны на бумаге "
-                        f"рядом с кожей. Попытка {retries}/3.")
-                return
-
-        cap=(upd.message.caption or "").strip()
-        u["photo_b64"]=b64[:100]
-        u["last_active"]=datetime.now().isoformat()
-        is_first_photo = not u.get("badges") or "first_photo" not in u.get("badges",[])
-        result_type,result=await pipeline_photo(b64,cap,u)
-    except Exception as e:
-        log.error(f"handle_photo error: {e}")
-        try: await st.delete()
-        except: pass
-        await upd.message.reply_text("Не удалось обработать фото. Попробуй ещё раз или пришли другое фото.")
-        sh(h); return
+        skin_result = predict_image(tmp_path)
+        u["local_model_result"] = skin_result
     finally:
-        try: await st.delete()
-        except: pass
+        os.unlink(tmp_path)
+
+    cap=(upd.message.caption or "").strip()
+    u["photo_b64"]=b64[:100]
+    result_type,result=await pipeline_photo(b64,cap,u)
+
+    try: await st.delete()
+    except: pass
 
     if result_type=="ask_reshoot":
         await upd.message.reply_text(f"📸 {result}")
@@ -792,43 +423,8 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["state"]=S_ACTIVE
         if u["day"]==0: u["day"]=1;u["week"]=1
 
-    # Extract skin score from vision data
-    vis=u.get("vision_data") or {}
-    skin_sc=vis.get("skin_score") if isinstance(vis,dict) else None
-    has_makeup=vis.get("has_makeup",False) if isinstance(vis,dict) else False
-    visual_age=vis.get("visual_age") if isinstance(vis,dict) else None
-    if skin_sc and skin_sc.get("total") is not None:
-        u=on_regular_photo_score(u,skin_sc,has_makeup)
-
-    # Gamification: первое фото
-    gam_msgs = []
-    if is_first_photo and result_type not in ("error", "ask_reshoot"):
-        u, notifs = on_first_photo(u)
-        gam_msgs.extend(notifs)
-
-    # Competition result
-    score_line=""
-    if is_compete_photo and skin_sc and skin_sc.get("total") is not None:
-        u=on_compete_photo(u,skin_sc,has_makeup)
-        u["state"]=S_ACTIVE
-        t=skin_sc.get("total",0)
-        score_line=(f"\n\n✅ Результат засчитан в рейтинг!\n📊 {score_bar(t)} {t}%"
-                    f"{' (с макияжем)' if has_makeup else ' (без макияжа)'}\n/skinrank — посмотреть рейтинг")
-    elif is_compete_photo and (not skin_sc or skin_sc.get("total") is None):
-        u["state"]=S_ACTIVE
-        sh(h)
-        await upd.message.reply_text("Фото не подходит для оценки. Попробуй ещё раз с хорошим освещением.")
-        return
-    elif skin_sc and skin_sc.get("total") is not None:
-        t=skin_sc.get("total",0)
-        makeup_note=" (с макияжем)" if has_makeup else " (без макияжа)"
-        age_note=f" · Визуальный возраст: {visual_age}" if visual_age else ""
-        score_line=f"\n\n📊 {score_bar(t)} {t}%{makeup_note}{age_note}\n/compete — участвовать в рейтинге"
-
     sh(h)
-    msg=intro+diag_text+q_text+score_line
-    if gam_msgs:
-        msg += "\n" + "".join(gam_msgs)
+    msg=intro+diag_text+q_text
     await send(upd.message,msg)
 
     # If no questions — proceed to final immediately
@@ -836,56 +432,24 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         st2=await upd.message.reply_text("Генерирую план... ⏳")
         try: reply=await pipeline_final(u,"")
         except Exception as e: reply="Ошибка. /next"; log.error(f"Final:{e}")
-        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"])
+        u["msgs"].append({"role":"assistant","content":reply});u["msgs"]=tm(u["msgs"]);sh(h)
         try: await st2.delete()
         except: pass
-        # Try to parse 3-part JSON response
-        try:
-            parsed = json.loads(reply) if isinstance(reply,str) and reply.strip().startswith("{") else None
-            if isinstance(parsed, dict) and "msg1" in parsed:
-                await send(upd.message, parsed["msg1"])
-                if parsed.get("msg2"):
-                    await asyncio.sleep(0.5)
-                    await send(upd.message, parsed["msg2"])
-                if parsed.get("msg3"):
-                    await asyncio.sleep(0.5)
-                    await send(upd.message, parsed["msg3"])
-            else:
-                await send(upd.message, reply)
-        except Exception:
-            await send(upd.message, reply)
-        # Save to photo history
-        hist_entry = {
-            "date": datetime.now().strftime("%d.%m.%Y"),
-            "diagnosis": u.get("diagnosis",""),
-            "score": (u.get("vision_data") or {}).get("skin_score",{}).get("total"),
-        }
-        if "photo_history" not in u:
-            u["photo_history"] = []
-        u["photo_history"].append(hist_entry)
-        u["photo_history"] = u["photo_history"][-30:]  # keep last 30
-        # Offer lab tests after diagnosis (skip for healthy skin)
-        if u.get("diagnosis","").lower() != "здоровая кожа":
-            labs_msg=format_labs_message(u.get("diagnosis",""))
-            u["state"]=S_LABS;sh(h)
-            await send(upd.message,labs_msg)
-        else:
-            sh(h)
+        await send(upd.message,reply)
+        # Share button after analysis
+        share_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("👥 Пригласить друга", url="https://t.me/share/url?url=https://t.me/Bottestvghh_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
+        ]])
+        await upd.message.reply_text("👆 Понравился анализ? Поделись с другом!", reply_markup=share_kb)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    if u["state"] not in (S_ACTIVE,S_LABS): await upd.message.reply_text("/start"); return
-    if not check_access(u, upd.effective_user):
-        await upd.message.reply_text(PAYWALL_MESSAGE)
-        return
+    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
     await upd.message.chat.send_action(ChatAction.TYPING)
     u["day"]+=1
     if u["day"]>28:
-        u, notifs = on_program_complete(u)
-        sh(h)
-        msg = f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения."
-        if notifs: msg += "\n" + "".join(notifs)
-        await upd.message.reply_text(msg); return
+        await upd.message.reply_text(f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения.")
+        sh(h); return
     u["week"]=((u["day"]-1)//7)+1
     wt=WEEKS.get(u["week"],"Программа");diw=((u["day"]-1)%7)+1
     df=FOCUSES.get(u["week"],{}).get(diw,"Следуй программе")
@@ -897,706 +461,43 @@ async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         name=u.get("name","друг"),diagnosis=diag,day_focus=df,context=context)
     try: plan=await ct([{"role":"system","content":pr},{"role":"user","content":f"План на день {u['day']}."}],REASON_M,TXT_FB,600)
     except: plan="Не удалось. /next через минуту."
-
-    # Gamification: стрик + очки за день
-    u, streak_notifs = update_streak(u)
-    u, pts_notifs = add_points(u, POINTS["daily_next"])
-    gam_suffix = "".join(streak_notifs + pts_notifs)
-
-    # Сюрпризы по дням
-    surprises = {
-        7:  "\n\n🎁 Сюрприз! Антивоспалительный смузи: шпинат + куркума + имбирь + кокосовое молоко. Попробуй сегодня!",
-        14: "\n\n🎁 День 14! Разблокирован стресс-протокол: дыхание 4-7-8 перед сном, 5 минут.",
-        21: "\n\n🎁 3 недели! Ты молодец. Посмотри на первое фото — кожа меняется. Продолжай!",
-        28: "\n\n🏆 28 дней пройдено! Это победа. Напиши что изменилось и отправь финальное фото.",
-    }
-    if u["day"] in surprises:
-        gam_suffix += surprises[u["day"]]
-
-    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"])
-    await send(upd.message, plan + (f"\n\n⭐ +{POINTS['daily_next']} очков" if not gam_suffix else "") + gam_suffix)
-    if u["day"]==22:
-        if u.get("labs_raw"):
-            await upd.message.reply_text(
-                "🔬 Прошло 3 недели! Обнови анализы для точных рекомендаций.\n"
-                "Пришли новые результаты или напиши пропустить.")
-        else:
-            await upd.message.reply_text(
-                "🔬 Неделя 4 — время анализов!\n\n"
-                "Ты прошёл 3 недели программы. Сдай анализы чтобы скорректировать план.\n\n"
-                + format_labs_message(u.get("diagnosis","")))
-        u["state"]=S_LABS
-    sh(h)
+    u["msgs"].append({"role":"assistant","content":plan});u["msgs"]=tm(u["msgs"]);sh(h)
+    await send(upd.message,plan)
 
 async def cmd_status(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    lines = []
-    if is_trial_active(u):
-        d = days_left_trial(u)
-        lines.append(f"⏳ Пробный период: осталось {d} дн.")
-    elif u.get("subscription") == "paid" and u.get("paid_until"):
-        lines.append(f"✅ Подписка активна до: {u['paid_until']}")
-    else:
-        used = u.get("questions_this_week", 0)
-        left = max(0, MAX_QUESTIONS_PER_WEEK - used)
-        lines.append(f"🔒 Подписка не активна")
-        lines.append(f"💬 Вопросов осталось на этой неделе: {left}/3")
-        lines.append(f"👉 /subscribe — оформить подписку")
-    diag = u.get("diagnosis","не определено")
-    day = u.get("day",0)
-    lines.append(f"\n📋 Диагноз: {diag}")
-    lines.append(f"📅 День программы: {day}/28")
-    if u.get("skin_score_last"):
-        lines.append(f"📊 Последняя оценка: {u['skin_score_last']}%")
-    await upd.message.reply_text("\n".join(lines))
-
-async def cmd_progress(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    history = u.get("photo_history",[])
-    if not history:
-        await upd.message.reply_text("Пока нет истории анализов. Пришли фото кожи — начнём отслеживать прогресс!")
-        return
-    lines=["📈 *Твой прогресс:*\n"]
-    for i,entry in enumerate(history,1):
-        date=entry.get("date","?")
-        diag=entry.get("diagnosis","?")
-        score=entry.get("score")
-        score_str=f" — {score_bar(score)} {score}%" if score is not None else ""
-        lines.append(f"{i}. {date}: {diag}{score_str}")
-    # Trend
-    scores=[e.get("score") for e in history if e.get("score") is not None]
-    if len(scores)>=2:
-        delta=scores[-1]-scores[0]
-        trend="📈" if delta>0 else "📉" if delta<0 else "➡️"
-        lines.append(f"\n{trend} Динамика: {scores[0]}% → {scores[-1]}% ({'+' if delta>=0 else ''}{delta}%)")
-    await upd.message.reply_text("\n".join(lines),parse_mode="Markdown")
-
-async def cmd_achievements(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();u=gu(h,upd.effective_user.id)
-    await upd.message.reply_text(format_achievements(u))
-
-async def cmd_leaderboard(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh()
-    await upd.message.reply_text(format_leaderboard(h))
-
-async def cmd_bonus(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    from telegram import InlineKeyboardButton,InlineKeyboardMarkup
-    h=lh();uid=upd.effective_user.id;u=gu(h,str(uid))
-    if u.get("group_bonus_claimed"):
-        await upd.message.reply_text("Ты уже получил бонус за вступление в группу 👥")
-        return
-    GROUP = os.getenv("COMMUNITY_GROUP","@skincoach_community")
-    try:
-        member=await ctx.bot.get_chat_member(chat_id=GROUP,user_id=uid)
-        if member.status in ("member","administrator","creator","restricted"):
-            u["group_member"]=True
-            u["group_bonus_claimed"]=True
-            u,notifs=add_points(u,POINTS["group_join"])
-            u,badge_msg=award_badge(u,"group_member")
-            # +7 дней к триалу
-            from datetime import timedelta
-            ts=u.get("trial_start",datetime.now().isoformat())
-            trial_dt=datetime.fromisoformat(ts)
-            u["trial_start"]=(trial_dt-timedelta(days=7)).isoformat()
-            sh(h)
-            msg="✅ Ты в группе! Бонус начислен:\n+7 дней к пробному периоду\n+50 очков"
-            if badge_msg: msg+=badge_msg
-            await upd.message.reply_text(msg)
-        else:
-            raise Exception("not member")
-    except:
-        keyboard=InlineKeyboardMarkup([[
-            InlineKeyboardButton("👥 Вступить в группу",url=f"https://t.me/{GROUP.lstrip('@')}")
-        ]])
-        await upd.message.reply_text(
-            f"Вступи в группу SkinCoach и получи +7 дней бесплатно!\n\nПосле вступления нажми /bonus ещё раз.",
-            reply_markup=keyboard)
-
-async def cmd_labs(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh();u=gu(h,upd.effective_user.id)
-    if u["state"] in (S_NAME,S_DUR,S_TRIED,S_PHOTO,S_QUESTIONS):
-        await upd.message.reply_text("Сначала заверши диагностику — пришли фото кожи 📸"); return
-    labs_msg=format_labs_message(u.get("diagnosis",""))
-    u["state"]=S_LABS;sh(h)
-    await upd.message.reply_text(labs_msg)
-
-async def cmd_compete(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh();uid=upd.effective_user.id;u=gu(h,uid)
-    if u["state"] not in (S_ACTIVE,S_LABS,S_COMPETE):
-        await upd.message.reply_text("Сначала сделай анализ кожи — пришли фото 📸"); return
-    if can_compete_today(u):
-        best_nat=u.get("best_score_natural")
-        best_mak=u.get("best_score_makeup")
-        nat_str=str(best_nat) if best_nat is not None else "—"
-        mak_str=str(best_mak) if best_mak is not None else "—"
-        await upd.message.reply_text(
-            f"Ты уже участвовал сегодня!\n\n"
-            f"Твой лучший: {nat_str} (без макияжа) | {mak_str} (с макияжем)\n\n"
-            "Посмотри /skinrank для рейтинга."); return
-    code=generate_challenge_code()
-    u["challenge_code"]=code
-    u["challenge_date"]=datetime.utcnow().date().isoformat()
-    u["compete_retry_count"]=0
-    u["state"]=S_COMPETE
-    sh(h)
+    if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
+    wt=WEEKS.get(u["week"],"Программа");pct=int((u["day"]/28)*100)
+    bar="▓"*(pct//10)+"░"*(10-pct//10)
+    diag=u.get("diagnosis","не определено")
+    reason=u.get("reasoning_data",{})
+    hyps=reason.get("hypotheses",[])
+    diag_info=""
+    if hyps:
+        diag_info="\n\nДиагноз:\n"
+        for hp in hyps[:3]:
+            diag_info+=f"  {hp.get('diagnosis','?')} — {hp.get('probability',0)}%\n"
     await upd.message.reply_text(
-        f"Для рейтинга напиши на бумажке:\n\n"
-        f"        {code}\n\n"
-        "и сфотографируй кожу рядом с ней 📸\n\n"
-        "Код должен быть чётко виден. Попытки: 3.")
-
-async def cmd_skinrank(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    h=lh();uid=str(upd.effective_user.id)
-    await upd.message.reply_text(format_skinrank(h,viewer_uid=uid))
+        f"📊 {u.get('name','')}{diag_info}\n"
+        f"День {u['day']}/28\nНеделя {u['week']}/4 — {wt}\n[{bar}] {pct}%\n\n"
+        f"/next — следующий день\n📸 Фото — повторный анализ")
 
 async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
         "📸 Фото — полный анализ с диагнозом и вероятностями\n"
         "💬 Текст — вопросы, отчёты\n\n"
-        "/next — следующий день\n/status — прогресс + диагноз\n"
-        "/progress — история всех анализов с динамикой\n"
-        "/achievements — бейджи, уровень, очки\n"
-        "/bonus — бонус за вступление в группу\n"
-        "/labs — ввести или обновить анализы\n"
-        "/leaderboard — топ участников\n"
-        "/ref — реферальная ссылка (+7 дней другу)\n"
-        "/start — заново")
-
-async def send_daily_notifications(context: ContextTypes.DEFAULT_TYPE):
-    """Ежедневное утреннее уведомление: день программы + предупреждения о конце триала/подписки"""
-    h = lh()
-    now = datetime.now()
-    changed = False
-    for uid, u in list(h.items()):
-        try: chat_id = int(uid)
-        except: continue
-        apply_migration_defaults(u)
-        name = u.get("name", "друг")
-
-        # --- Предупреждение: завтра заканчивается триал ---
-        if is_trial_active(u) and days_left_trial(u) == 1:
-            last_tw = u.get("last_trial_warn")
-            already_sent = False
-            if last_tw:
-                try:
-                    if (now - datetime.fromisoformat(last_tw)).total_seconds() < 20*3600:
-                        already_sent = True
-                except: pass
-            if not already_sent:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=(
-                        f"⏰ {name}, завтра заканчивается пробный период!\n\n"
-                        f"За 7 дней я узнал твою кожу и составил программу.\n"
-                        f"Чтобы продолжить — оформи подписку сегодня.\n\n"
-                        f"👉 /subscribe — 490₽/мес"
-                    ))
-                    u["last_trial_warn"] = now.isoformat()
-                    changed = True
-                    log.info(f"Trial warn → {uid}")
-                except Exception as e:
-                    log.warning(f"Trial warn {uid}: {e}")
-
-        # --- Предупреждение: через 2 дня заканчивается подписка ---
-        if u.get("subscription") == "paid" and u.get("paid_until"):
-            try:
-                from datetime import date as _date
-                days_left_sub = (datetime.fromisoformat(u["paid_until"]).date() - _date.today()).days
-                if days_left_sub == 2:
-                    last_sw = u.get("last_sub_warn")
-                    already_sent = False
-                    if last_sw:
-                        try:
-                            if (now - datetime.fromisoformat(last_sw)).total_seconds() < 20*3600:
-                                already_sent = True
-                        except: pass
-                    if not already_sent:
-                        try:
-                            await context.bot.send_message(chat_id=chat_id, text=(
-                                f"⏰ {name}, подписка заканчивается через 2 дня ({u['paid_until']}).\n\n"
-                                f"Продли сейчас — не прерывай программу.\n\n"
-                                f"👉 /subscribe"
-                            ))
-                            u["last_sub_warn"] = now.isoformat()
-                            changed = True
-                            log.info(f"Sub warn → {uid}")
-                        except Exception as e:
-                            log.warning(f"Sub warn {uid}: {e}")
-            except: pass
-
-        # --- Ежедневное напоминание о программе ---
-        if u.get("state") != S_ACTIVE: continue
-        if u.get("notify_daily") is not True: continue
-        day = u.get("day", 0)
-        if day == 0 or day > 28: continue
-        last_notif = u.get("last_daily_notify")
-        if last_notif:
-            try:
-                if (now - datetime.fromisoformat(last_notif)).total_seconds() < 23*3600:
-                    continue
-            except: pass
-        week = u.get("week", 1)
-        wt = WEEKS.get(week, "Программа")
-        diw = ((day - 1) % 7) + 1
-        df = FOCUSES.get(week, {}).get(diw, "Следуй программе")
-        msg = (f"☀️ {name}, доброе утро!\n\n"
-               f"День {day}/28 — {W_EMOJI.get(week,'📋')} Неделя {week}: {wt}\n\n"
-               f"🎯 Фокус дня: {df}\n\n"
-               f"📸 Пришли фото или напиши как кожа — продолжим вместе.")
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-            u["last_daily_notify"] = now.isoformat()
-            changed = True
-            log.info(f"Daily notify → {uid}")
-        except Exception as e:
-            log.warning(f"Daily notify {uid}: {e}")
-    if changed: sh(h)
-
-async def send_reengagement(context: ContextTypes.DEFAULT_TYPE):
-    """Напоминание пользователям которые молчат 48+ часов"""
-    h = lh()
-    now = datetime.now()
-    changed = False
-    for uid, u in list(h.items()):
-        if u.get("state") not in (S_ACTIVE, S_QUESTIONS): continue
-        if u.get("day", 0) == 0: continue
-        try: chat_id = int(uid)
-        except: continue
-        last = u.get("last_active")
-        if not last: continue
-        try:
-            hours_silent = (now - datetime.fromisoformat(last)).total_seconds() / 3600
-        except: continue
-        if hours_silent < 48: continue
-        last_notif = u.get("last_reengagement")
-        if last_notif:
-            try:
-                if (now - datetime.fromisoformat(last_notif)).total_seconds() < 86400:
-                    continue
-            except: pass
-        name = u.get("name", "друг")
-        msg = f"👋 {name}, как твоя кожа?\n\nПришли фото или напиши как ты — продолжим вместе."
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-            u["last_reengagement"] = now.isoformat()
-            changed = True
-            log.info(f"Reengagement → {uid}")
-        except Exception as e:
-            log.warning(f"Reengagement {uid}: {e}")
-    if changed: sh(h)
-
-
-async def cmd_profile(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
-    lines = []
-    if is_trial_active(u):
-        d = days_left_trial(u)
-        lines.append(f"⏳ Пробный период: осталось {d} дн.")
-    elif u.get("subscription") == "paid" and u.get("paid_until"):
-        lines.append(f"✅ Подписка активна до: {u['paid_until']}")
-    else:
-        used = u.get("questions_this_week", 0)
-        left = max(0, MAX_QUESTIONS_PER_WEEK - used)
-        lines.append(f"🔒 Подписка не активна · вопросов: {left}/3")
-    diag = u.get("diagnosis", "не определено")
-    day = u.get("day", 0)
-    lines.append(f"📋 Диагноз: {diag}")
-    lines.append(f"📅 День программы: {day}/28")
-    if u.get("skin_score_last"):
-        lines.append(f"📊 Последняя оценка: {u['skin_score_last']}%")
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➡️ Следующий день", callback_data="menu:next"),
-         InlineKeyboardButton("🏆 Достижения", callback_data="menu:achievements")],
-        [InlineKeyboardButton("🔬 Анализы", callback_data="menu:labs")],
-    ])
-    await upd.message.reply_text("\n".join(lines), reply_markup=kb)
-
-
-async def cmd_settings(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
-    notify_status = "вкл ✅" if u.get("notify_daily") else "выкл ❌"
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Оформить подписку", callback_data="menu:subscribe")],
-        [InlineKeyboardButton(f"🔔 Напоминания ({notify_status})", callback_data="menu:notify"),
-         InlineKeyboardButton("🎁 Пригласить друга", callback_data="menu:ref")],
-        [InlineKeyboardButton("👥 Бонус за группу", callback_data="menu:bonus")],
-    ])
-    await upd.message.reply_text("⚙️ Настройки", reply_markup=kb)
-
-
-async def cmd_rank(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🥇 Рейтинг кожи", callback_data="menu:skinrank"),
-         InlineKeyboardButton("📊 Топ участников", callback_data="menu:leaderboard")],
-        [InlineKeyboardButton("🏆 Участвовать", callback_data="menu:compete")],
-    ])
-    await upd.message.reply_text("🏆 Рейтинги", reply_markup=kb)
-
-
-async def handle_menu_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query
-    await q.answer()
-    action = q.data.split(":", 1)[1]
-    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
-    msg = q.message  # use callback message for replies
-    if action == "next":
-        # Inline version of cmd_next
-        if not check_access(u, upd.effective_user):
-            await msg.reply_text(PAYWALL_MESSAGE); return
-        if u.get("state") != S_ACTIVE:
-            await msg.reply_text("Сначала пришли фото кожи 📸"); return
-        if u.get("day", 0) >= 28:
-            await msg.reply_text("Программа завершена! 🎉"); return
-        st = await msg.reply_text("Генерирую план следующего дня... ⏳")
-        u["day"] = u.get("day", 0) + 1
-        diw = ((u["day"] - 1) % 7) + 1
-        if diw == 1 and u["day"] > 1:
-            u["week"] = u.get("week", 1) + 1
-        sh(h)
-        try: reply = await pipeline_final(u, "")
-        except Exception as e: reply = "Ошибка. Попробуй позже."; log.error(f"Next:{e}")
-        try: await st.delete()
-        except: pass
-        try:
-            parsed = json.loads(reply) if isinstance(reply, str) and reply.strip().startswith("{") else None
-            if isinstance(parsed, dict) and "msg1" in parsed:
-                await send(msg, parsed["msg1"])
-                if parsed.get("msg2"): await asyncio.sleep(0.5); await send(msg, parsed["msg2"])
-                if parsed.get("msg3"): await asyncio.sleep(0.5); await send(msg, parsed["msg3"])
-            else:
-                await send(msg, reply)
-        except Exception: await send(msg, reply)
-    elif action == "achievements":
-        await msg.reply_text(format_achievements(u))
-    elif action == "labs":
-        if u["state"] in (S_NAME, S_DUR, S_TRIED, S_PHOTO, S_QUESTIONS):
-            await msg.reply_text("Сначала заверши диагностику 📸"); return
-        labs_msg = format_labs_message(u.get("diagnosis", ""))
-        u["state"] = S_LABS; sh(h)
-        await msg.reply_text(labs_msg)
-    elif action == "subscribe":
-        price = 490
-        if u.get("discount_pct", 0) > 0:
-            disc = u["discount_pct"]
-            final = int(price * (1 - disc / 100))
-            price_line = f"💰 Цена: {final}₽/мес (скидка {disc}% активирована!)"
-        else:
-            price_line = f"💰 Цена: {price}₽/мес"
-        pay_details = os.getenv("PAYMENT_DETAILS", "Реквизиты не настроены — напиши администратору")
-        await msg.reply_text(
-            f"📋 Подписка SkinCoach\n\n{price_line}\n\n"
-            f"✅ Полный анализ · 28-дневная программа · Безлимитный чат\n\n"
-            f"💳 {pay_details}\n\nПосле оплаты пришли скриншот — активирую в течение часа."
-        )
-    elif action == "notify":
-        if u.get("notify_daily"):
-            u["notify_daily"] = False; sh(h)
-            await msg.reply_text("🔕 Ежедневные напоминания отключены.")
-        else:
-            await ask_notify_preference(msg)
-    elif action == "ref":
-        bot_username = (await ctx.bot.get_me()).username
-        ref_code = u.get("ref_code") or f"REF_{uid}"
-        u["ref_code"] = ref_code; sh(h)
-        link = f"https://t.me/{bot_username}?start={ref_code}"
-        await msg.reply_text(
-            f"🎁 Твоя реферальная ссылка:\n{link}\n\n"
-            f"Поделись с другом — вы оба получите скидку 50%!\n"
-            f"Твоих приглашений: {u.get('ref_count', 0)}"
-        )
-    elif action == "bonus":
-        if u.get("group_bonus_claimed"):
-            await msg.reply_text("Ты уже получил бонус за вступление в группу 👥"); return
-        GROUP = os.getenv("COMMUNITY_GROUP", "@skincoach_community")
-        try:
-            member = await ctx.bot.get_chat_member(chat_id=GROUP, user_id=uid)
-            if member.status in ("member", "administrator", "creator", "restricted"):
-                u["group_member"] = True; u["group_bonus_claimed"] = True
-                u, notifs = add_points(u, POINTS["group_join"])
-                u, badge_msg = award_badge(u, "group_member")
-                from datetime import timedelta
-                ts = u.get("trial_start", datetime.now().isoformat())
-                u["trial_start"] = (datetime.fromisoformat(ts) - timedelta(days=7)).isoformat()
-                sh(h)
-                reply_msg = "✅ Ты в группе! +7 дней к пробному периоду, +50 очков"
-                if badge_msg: reply_msg += badge_msg
-                await msg.reply_text(reply_msg)
-            else:
-                raise Exception("not member")
-        except:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("👥 Вступить в группу", url=f"https://t.me/{GROUP.lstrip('@')}")]])
-            await msg.reply_text("Вступи в группу SkinCoach — получи +7 дней бесплатно!\n\nПосле вступления зайди в /settings → Бонус.", reply_markup=kb)
-    elif action == "skinrank":
-        await msg.reply_text(format_skinrank(h, viewer_uid=str(uid)))
-    elif action == "leaderboard":
-        await msg.reply_text(format_leaderboard(h))
-    elif action == "compete":
-        await cmd_compete(upd, ctx)
-
-
-async def ask_notify_preference(message) -> None:
-    """Отправить вопрос об ежедневных напоминаниях с inline-кнопками."""
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Да, хочу", callback_data="notify:yes"),
-        InlineKeyboardButton("❌ Нет", callback_data="notify:no"),
-    ]])
-    await message.reply_text(
-        "☀️ Хочешь ежедневные напоминания в 9:00 МСК?\n"
-        "Каждый день буду присылать фокус дня по программе.",
-        reply_markup=kb
-    )
-
-
-async def handle_notify_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = upd.callback_query
-    await q.answer()
-    uid = upd.effective_user.id
-    h = lh(); u = gu(h, uid)
-    if q.data == "notify:yes":
-        u["notify_daily"] = True
-        sh(h)
-        await q.edit_message_text("✅ Отлично! Буду присылать напоминания каждый день в 9:00 МСК.")
-    elif q.data == "notify:no":
-        u["notify_daily"] = False
-        sh(h)
-        await q.edit_message_text("Хорошо, напоминания отключены. Можно включить через /notify.")
-
-
-async def cmd_notify(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Включить/выключить ежедневные напоминания."""
-    uid = upd.effective_user.id; h = lh(); u = gu(h, uid)
-    if u.get("notify_daily"):
-        u["notify_daily"] = False; sh(h)
-        await upd.message.reply_text("🔕 Ежедневные напоминания отключены.")
-    else:
-        await ask_notify_preference(upd.message)
-
-
-async def cmd_subscribe(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    price = 490
-    if u.get("discount_pct",0) > 0:
-        disc = u["discount_pct"]
-        final = int(price * (1 - disc/100))
-        price_line = f"💰 Цена: {final}₽/мес (скидка {disc}% активирована!)"
-    else:
-        price_line = f"💰 Цена: {price}₽/мес"
-    pay_details = os.getenv("PAYMENT_DETAILS","Реквизиты не настроены — напиши администратору")
-    msg = (
-        f"📋 Подписка SkinCoach\n\n"
-        f"{price_line}\n\n"
-        f"Что входит:\n"
-        f"✅ Полный анализ кожи\n"
-        f"✅ 28-дневная программа\n"
-        f"✅ Безлимитный чат\n"
-        f"✅ Питание, уход, психосоматика\n\n"
-        f"💳 Реквизиты для оплаты:\n{pay_details}\n\n"
-        f"После оплаты пришли скриншот сюда — активирую доступ в течение часа."
-    )
-    await upd.message.reply_text(msg)
-
-async def cmd_grant(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    admin_id = os.getenv("ADMIN_ID","").strip()
-    if not admin_id or str(upd.effective_user.id) != admin_id:
-        return
-    args=ctx.args
-    if not args:
-        await upd.message.reply_text("Usage: /grant <user_id> [days]"); return
-    target_uid=args[0]
-    days=int(args[1]) if len(args)>1 else 30
-    h=lh()
-    if target_uid not in h:
-        await upd.message.reply_text(f"User {target_uid} not found"); return
-    disc = h[target_uid].get("discount_pct",0)
-    activate_subscription(h[target_uid], days=days, discount_pct=disc)
-    sh(h)
-    await upd.message.reply_text(f"✅ Подписка активирована для {target_uid} на {days} дней")
-    try:
-        await ctx.bot.send_message(int(target_uid),
-            f"🎉 Твоя подписка активирована на {days} дней!\n"
-            f"Теперь у тебя полный доступ. Пришли фото — начнём программу.")
-    except Exception as e:
-        log.warning(f"Could not notify user {target_uid}: {e}")
-
-async def cmd_revoke(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    admin_id = os.getenv("ADMIN_ID","").strip()
-    if not admin_id or str(upd.effective_user.id) != admin_id:
-        return
-    args=ctx.args
-    if not args:
-        await upd.message.reply_text("Usage: /revoke <user_id>"); return
-    target_uid=args[0]
-    h=lh()
-    if target_uid not in h:
-        await upd.message.reply_text(f"User {target_uid} not found"); return
-    revoke_subscription(h[target_uid])
-    sh(h)
-    await upd.message.reply_text(f"✅ Подписка отозвана у {target_uid}")
-
-async def cmd_ref(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    # Generate ref_code if not set
-    if not u.get("ref_code"):
-        u["ref_code"] = f"REF_{uid}"
-        sh(h)
-    bot_username = (await ctx.bot.get_me()).username
-    ref_code = u["ref_code"]
-    link = f"https://t.me/{bot_username}?start={ref_code}"
-    msg = (
-        f"🎁 Твоя реферальная ссылка:\n{link}\n\n"
-        f"Поделись с другом — вы оба получите скидку 50% на первый месяц.\n"
-        f"То есть всего 245₽ вместо 490₽!\n\n"
-        f"Твоих приглашений: {u.get('ref_count',0)}"
-    )
-    await upd.message.reply_text(msg)
-
-async def cmd_face(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    u["state"]=S_FACE;sh(h)
-    await upd.message.reply_text("✨ Пришли фото лица при дневном свете, без макияжа.")
-
-async def handle_face_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
-    uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    st=await upd.message.reply_text("🔍 Анализирую кожу лица... ⏳")
-    await upd.message.chat.send_action(ChatAction.TYPING)
-    try:
-        ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
-        b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
-    except Exception as e:
-        log.error(f"face photo download: {e}")
-        try: await st.delete()
-        except: pass
-        await upd.message.reply_text("Не удалось загрузить фото. Попробуй ещё раз.")
-        u["state"]=S_ACTIVE;sh(h)
-        return
-
-    # 1. Quality check
-    qp=rp("1_quality.txt","Проверь качество фото.")
-    try:
-        qraw=await call_raw([
-            {"role":"system","content":qp},
-            {"role":"user","content":[
-                {"type":"text","text":"Проверь качество этого фото кожи лица."},
-                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
-            ]}],VISION_M,VIS_FB,300)
-        qd=xj(qraw)
-        if isinstance(qd,dict) and qd.get("quality_ok")==False:
-            try: await st.delete()
-            except: pass
-            await upd.message.reply_text("📸 Фото нечёткое или лицо не видно. Попробуй при дневном свете, поближе.")
-            u["state"]=S_ACTIVE;sh(h)
-            return
-    except Exception as e:
-        log.warning(f"face quality check failed: {e}")
-
-    # 2. Face vision scoring
-    fp=rp("face_vision.txt","Оцени кожу лица.")
-    try:
-        fraw=await call_raw([
-            {"role":"system","content":fp},
-            {"role":"user","content":[
-                {"type":"text","text":"Оцени кожу лица на этом фото."},
-                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}
-            ]}],VISION_M,VIS_FB,600)
-        fd=xj(fraw)
-    except Exception as e:
-        log.error(f"face vision fail: {e}")
-        try: await st.delete()
-        except: pass
-        await upd.message.reply_text("Не удалось проанализировать. Попробуй позже.")
-        u["state"]=S_ACTIVE;sh(h)
-        return
-
-    try: await st.delete()
-    except: pass
-
-    if not isinstance(fd,dict) or fd.get("quality_ok")==False:
-        await upd.message.reply_text("📸 Не вижу лицо чётко. Попробуй при хорошем освещении.")
-        u["state"]=S_ACTIVE;sh(h)
-        return
-
-    sc = fd.get("skin_score") or {}
-    total = sc.get("total",0)
-    grade = score_grade(total)
-    name = u.get("name","друг")
-    visual_age = fd.get("visual_age","?")
-    concern = fd.get("cosmetic_concern") or ""
-
-    lines = [f"✨ {name}, вот оценка кожи лица:\n"]
-    lines.append(f"📊 {total}% — {grade}")
-    for label, key in [("Тон","tone"),("Увлажн.","hydration"),("Текстура","texture"),
-                        ("Живость","vitality"),("Чистота","cleanliness"),
-                        ("Молодость","youth"),("Глаза","eye_area")]:
-        pct = sc.get(key,0)
-        lines.append(f"{score_bar(pct)} {label}: {pct}%")
-    lines.append(f"\n👁 Визуальный возраст: {visual_age} лет")
-    if concern:
-        lines.append(f"🔎 {concern}")
-
-    reply = "\n".join(lines)
-
-    # Submit to skinrank
-    u = on_regular_photo_score(u, {"total": total, **sc}, False)
-    u["state"]=S_ACTIVE;sh(h)
-    await upd.message.reply_text(reply)
-
-    # Upsell if not paid
-    if not check_access(u, upd.effective_user):
-        await asyncio.sleep(0.5)
-        await upd.message.reply_text(
-            "💡 Хочешь программу ухода под эту оценку?\n"
-            "👉 /subscribe — 490₽/мес"
-        )
+        "/next — следующий день\n/status — прогресс + диагноз\n/start — заново")
 
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
     if sys.platform=="win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    async def post_init(application):
-        await application.bot.set_my_commands([
-            BotCommand("start","🔄 Начать заново / регистрация"),
-            BotCommand("help","ℹ️ Справка по боту"),
-            BotCommand("face","✨ Оценка кожи лица"),
-            BotCommand("profile","👤 Мой профиль и прогресс"),
-            BotCommand("settings","⚙️ Подписка и настройки"),
-            BotCommand("rank","🏆 Рейтинги"),
-        ])
-        notify_hour = int(os.getenv("NOTIFY_HOUR_UTC", "6"))  # 6 UTC = 9 MSK
-        application.job_queue.run_daily(
-            send_daily_notifications,
-            time=dtime(hour=notify_hour, minute=0)
-        )
-        application.job_queue.run_repeating(
-            send_reengagement,
-            interval=43200,   # каждые 12 часов
-            first=3600        # первый запуск через 1 час после старта
-        )
-        log.info(f"Scheduler: daily at {notify_hour}:00 UTC, reengagement every 12h")
-    req = HTTPXRequest(http_version="1.1", connect_timeout=30, read_timeout=30, write_timeout=30, pool_timeout=30)
-    app=ApplicationBuilder().token(TOKEN).post_init(post_init).request(req).build()
+    app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
-    app.add_handler(CommandHandler("face",cmd_face))
-    app.add_handler(CommandHandler("profile",cmd_profile))
-    app.add_handler(CommandHandler("settings",cmd_settings))
-    app.add_handler(CommandHandler("rank",cmd_rank))
-    # Hidden commands (still work if typed directly)
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
-    app.add_handler(CommandHandler("progress",cmd_progress))
-    app.add_handler(CommandHandler("achievements",cmd_achievements))
-    app.add_handler(CommandHandler("bonus",cmd_bonus))
-    app.add_handler(CommandHandler("labs",cmd_labs))
-    app.add_handler(CommandHandler("leaderboard",cmd_leaderboard))
-    app.add_handler(CommandHandler("compete",cmd_compete))
-    app.add_handler(CommandHandler("skinrank",cmd_skinrank))
-    app.add_handler(CommandHandler("subscribe",cmd_subscribe))
-    app.add_handler(CommandHandler("grant",cmd_grant))
-    app.add_handler(CommandHandler("revoke",cmd_revoke))
-    app.add_handler(CommandHandler("ref",cmd_ref))
-    app.add_handler(CommandHandler("notify",cmd_notify))
-    app.add_handler(CallbackQueryHandler(handle_menu_callback, pattern="^menu:"))
-    app.add_handler(CallbackQueryHandler(handle_notify_callback, pattern="^notify:"))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
