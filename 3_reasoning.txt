@@ -9,6 +9,8 @@
 ВАЖНО: Если previous_diagnosis не null — сравни новый анализ с предыдущим и заполни блок diagnosis_comparison.
 
 СЦЕНАРИЙ A — Если healthy=true (кожа здоровая):
+НЕ СТАВЬ ДИАГНОЗ. primary_diagnosis = "здоровая кожа", severity = "none", phase = "remission".
+Никаких болезней (акне, псориаз, экзема и т.д.) при healthy=true быть не может.
 Оцени skin_score и определи приоритеты ухода. Даже при здоровой коже учитывай cosmetic_concerns.
 
 Верни ТОЛЬКО JSON:
