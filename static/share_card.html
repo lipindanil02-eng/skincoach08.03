@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SkinCoach — Результат анализа</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  display: flex; justify-content: center; align-items: center;
+  min-height: 100vh; background: #0f0f1a;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+.card {
+  width: 800px; min-height: 600px; border-radius: 24px;
+  background: linear-gradient(165deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  padding: 40px; position: relative; overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+/* Decorative gradient orbs */
+.card::before {
+  content: ''; position: absolute; top: -100px; right: -100px;
+  width: 400px; height: 400px;
+  background: radial-gradient(circle, rgba(233,69,96,0.15) 0%, transparent 70%);
+  border-radius: 50%;
+}
+.card::after {
+  content: ''; position: absolute; bottom: -80px; left: -80px;
+  width: 300px; height: 300px;
+  background: radial-gradient(circle, rgba(46,204,113,0.08) 0%, transparent 70%);
+  border-radius: 50%;
+}
+.header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.logo {
+  display: flex; align-items: center; gap: 12px;
+}
+.logo-icon {
+  width: 40px; height: 40px; border-radius: 12px;
+  background: linear-gradient(135deg, #e94560, #c23152);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+}
+.logo-text {
+  color: #fff; font-size: 20px; font-weight: 700; letter-spacing: -0.5px;
+}
+.logo-text span { color: #e94560; }
+.badge {
+  background: rgba(233,69,96,0.2); color: #e94560;
+  padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  border: 1px solid rgba(233,69,96,0.3);
+}
+.content { padding: 30px 0; }
+.diagnosis-section { margin-bottom: 24px; }
+.label { color: rgba(255,255,255,0.5); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.diagnosis-name {
+  font-size: 38px; font-weight: 800; color: #fff;
+  letter-spacing: -1px; line-height: 1.1;
+}
+.diagnosis-sub {
+  font-size: 20px; color: rgba(255,255,255,0.4); margin-top: 6px;
+}
+.confidence-bar {
+  margin: 24px 0; height: 6px; border-radius: 3px;
+  background: rgba(255,255,255,0.1); overflow: hidden;
+  width: 100%; max-width: 400px;
+}
+.confidence-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #e94560, #ff6b81);
+  transition: width 1s ease;
+}
+.stats-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 30px 0;
+}
+.stat-card {
+  background: rgba(255,255,255,0.05); border-radius: 16px;
+  padding: 20px; border: 1px solid rgba(255,255,255,0.06);
+}
+.stat-label { color: rgba(255,255,255,0.4); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-value { color: #fff; font-size: 24px; font-weight: 700; margin-top: 4px; }
+.risk-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px;
+  font-size: 13px; font-weight: 600;
+}
+.risk-low { background: rgba(46,204,113,0.15); color: #2ecc71; }
+.risk-medium { background: rgba(241,196,15,0.15); color: #f1c40f; }
+.risk-high { background: rgba(231,76,60,0.15); color: #e74c3c; }
+.top3-section { margin-top: 24px; }
+.top3-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-radius: 12px;
+  background: rgba(255,255,255,0.03); margin-bottom: 8px;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+.top3-rank { color: rgba(255,255,255,0.3); font-weight: 700; font-size: 14px; width: 30px; }
+.top3-name { color: #fff; font-size: 15px; flex: 1; }
+.top3-pct { color: rgba(255,255,255,0.6); font-size: 14px; font-weight: 600; }
+.footer {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08);
+}
+.footer-text { color: rgba(255,255,255,0.3); font-size: 13px; }
+.footer-bot { color: #e94560; font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }
+.qr-placeholder {
+  width: 56px; height: 56px; border-radius: 12px;
+  background: rgba(255,255,255,0.08);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; border: 1px solid rgba(255,255,255,0.1);
+}
+
+/* Animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.card > * { animation: fadeInUp 0.6s ease forwards; }
+.card > *:nth-child(2) { animation-delay: 0.1s; }
+.card > *:nth-child(3) { animation-delay: 0.2s; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">🔬</div>
+      <div class="logo-text">Skin<span>Coach</span></div>
+    </div>
+    <span class="badge">AI · 8-слойный анализ</span>
+  </div>
+
+  <div class="content">
+    <div class="diagnosis-section">
+      <div class="label">Диагноз</div>
+      <div class="diagnosis-name" id="diagName">Акне вульгарис</div>
+      <div class="diagnosis-sub" id="diagSub">Papulo-pustular, стадия обострения</div>
+    </div>
+
+    <div class="confidence-bar">
+      <div class="confidence-fill" style="width: 93%;" id="confFill"></div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Уверенность</div>
+        <div class="stat-value" id="confValue">93.5%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Уровень риска</div>
+        <div class="stat-value">
+          <span class="risk-badge risk-low" id="riskBadge">● Низкий</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="top3-section">
+      <div class="label">Топ гипотез</div>
+      <div id="top3List">
+        <div class="top3-item">
+          <span class="top3-rank">01</span>
+          <span class="top3-name">Акне вульгарис</span>
+          <span class="top3-pct">93.5%</span>
+        </div>
+        <div class="top3-item">
+          <span class="top3-rank">02</span>
+          <span class="top3-name">Периоральный дерматит</span>
+          <span class="top3-pct">4.2%</span>
+        </div>
+        <div class="top3-item">
+          <span class="top3-rank">03</span>
+          <span class="top3-name">Розацеа</span>
+          <span class="top3-pct">2.3%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>
+      <div class="footer-text">Попробовать бесплатно</div>
+      <div class="footer-bot">@kinesispro01_bot</div>
+    </div>
+    <div class="qr-placeholder">📱</div>
+  </div>
+</div>
+
+<script>
+// Data injection point — set values dynamically via URL params or JS
+const params = new URLSearchParams(window.location.search);
+if (params.get('d')) {
+  document.getElementById('diagName').textContent = params.get('d');
+  document.getElementById('confValue').textContent = params.get('c') || '93.5%';
+  const pct = parseInt(params.get('c')) || 93;
+  document.getElementById('confFill').style.width = Math.min(pct, 100) + '%';
+  
+  const risk = params.get('r') || 'low';
+  const badge = document.getElementById('riskBadge');
+  badge.className = 'risk-badge risk-' + risk;
+  const labels = {low: '● Низкий', medium: '● Средний', high: '● Высокий — к врачу!'};
+  badge.textContent = labels[risk] || labels.low;
+}
+</script>
+</body>
+</html>

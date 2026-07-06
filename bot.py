@@ -436,11 +436,32 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         try: await st2.delete()
         except: pass
         await send(upd.message,reply)
+        # Generate + send share card
+        try:
+            from gen_card import generate_card
+            import asyncio, os
+            rd = u.get("reasoning_data", {}) or {}
+            hyps = rd.get("hypotheses", []) or []
+            top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), h.get("probability", 0)) for h in hyps[:3]]
+            card_path = await asyncio.to_thread(
+                generate_card,
+                rd.get("primary_diagnosis", "Анализ завершён") or "Анализ завершён",
+                f"{rd.get('confidence', 85)}%",
+                rd.get("severity", "low") or "low",
+                top3,
+                str(upd.effective_user.id),
+            )
+            if os.path.exists(card_path):
+                with open(card_path, "rb") as f:
+                    await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
+                os.unlink(card_path)
+        except Exception as ce:
+            log.warning(f"Card gen fail: {ce}")
         # Share button after analysis
         share_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👥 Пригласить друга", url="https://t.me/share/url?url=https://t.me/Bottestvghh_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
+            InlineKeyboardButton("👥 Поделиться с другом", url="https://t.me/share/url?url=https://t.me/kinesispro01_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
         ]])
-        await upd.message.reply_text("👆 Понравился анализ? Поделись с другом!", reply_markup=share_kb)
+        await upd.message.reply_text("👆 Поделись результатом с другом!", reply_markup=share_kb)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
