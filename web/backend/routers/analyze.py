@@ -253,7 +253,6 @@ async def test_ml():
         return result
     
     # Минимальный валидный JPEG (1x1 пиксель) в base64
-    import base64
     minimal_jpeg_b64 = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAAA//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8Af//Z"
     try:
         img_bytes = base64.b64decode(minimal_jpeg_b64)

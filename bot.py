@@ -72,7 +72,7 @@ def xj(t):
     raise ValueError(f"No JSON: {t[:300]}")
 
 # History
-HIST="history.json"
+HIST = str(Path(__file__).parent / ".hermes" / "history.json")
 def lh():
     if os.path.exists(HIST):
         try:
@@ -370,8 +370,6 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
     # Локальная модель
-    import tempfile, os
-    from inference import predict_image
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp.write(b)
         tmp_path = tmp.name
@@ -439,7 +437,6 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         # Generate + send share card
         try:
             from gen_card import generate_card
-            import asyncio, os
             rd = u.get("reasoning_data", {}) or {}
             hyps = rd.get("hypotheses", []) or []
             top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), h.get("probability", 0)) for h in hyps[:3]]
