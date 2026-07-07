@@ -5,56 +5,9 @@ inference.py — Предсказание кожного заболевания 
 import json
 import os
 import torch
-import torch.nn as nn
-from torchvision import transforms, models
 from PIL import Image
+from core.model_loader import load_model as _load_model_shared, TRANSFORM
 
-# Путь к модели (локальный или через переменную окружения)
-MODEL_PATH = os.getenv("MODEL_PATH", "best_model.pth")
-HF_MODEL_URL = "https://huggingface.co/danyil163/SCINCOACH/resolve/main/best_model.pth"
-
-
-MIN_MODEL_SIZE = 10 * 1024 * 1024  # 10 MB minimum
-
-
-def _is_valid_model_file(path: str) -> bool:
-    if not os.path.exists(path):
-        return False
-    if os.path.getsize(path) < MIN_MODEL_SIZE:
-        return False
-    try:
-        import zipfile
-        with zipfile.ZipFile(path, "r"):
-            pass
-        return True
-    except Exception:
-        return False
-
-
-def _download_model_if_needed():
-    if _is_valid_model_file(MODEL_PATH):
-        return
-    if os.path.exists(MODEL_PATH):
-        print(f"⚠️  Файл модели повреждён, удаляю и скачиваю заново...")
-        os.remove(MODEL_PATH)
-    print(f"⬇️  Скачиваю модель с HuggingFace → {MODEL_PATH}")
-    os.makedirs(os.path.dirname(MODEL_PATH) or ".", exist_ok=True)
-
-    import httpx
-    with httpx.stream("GET", HF_MODEL_URL, follow_redirects=True, timeout=300) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        with open(MODEL_PATH, "wb") as f:
-            for chunk in r.iter_bytes(chunk_size=65536):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total > 0 and downloaded % (5 * 1024 * 1024) < 65536:
-                    pct = downloaded / total * 100
-                    print(f"   {pct:.0f}%", flush=True)
-    print("✅ Модель скачана")
-CLASS_MAP_PATH = "class_map.json"
-IMG_SIZE = 300
 CONFIDENCE_THRESHOLD = 0.5
 
 CLASS_LABELS_RU = {
@@ -138,45 +91,12 @@ def load_model():
     global _model, _class_map, _device
     if _model is not None:
         return
-
-    _download_model_if_needed()
-    _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    with open(CLASS_MAP_PATH, "r", encoding="utf-8") as f:
-        _class_map = json.load(f)
-
-    num_classes = len(_class_map)
-    checkpoint = torch.load(MODEL_PATH, map_location=_device, weights_only=False)
-    model_name = checkpoint.get("model_name", "efficientnet_b3")
-
-    if model_name == "efficientnet_b3":
-        model = models.efficientnet_b3(weights=None)
-        in_features = model.classifier[1].in_features
-        model.classifier = nn.Sequential(
-            nn.Dropout(p=0.4),
-            nn.Linear(in_features, num_classes)
-        )
-    else:
-        model = models.resnet50(weights=None)
-        in_features = model.fc.in_features
-        model.fc = nn.Sequential(
-            nn.Dropout(p=0.4),
-            nn.Linear(in_features, num_classes)
-        )
-
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(_device)
-    model.eval()
-    _model = model
-    print(f"✅ Модель загружена | Классов: {num_classes} | {_device}")
+    _model, _class_map, device_str = _load_model_shared()
+    _device = torch.device(device_str)
 
 
-_transform = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-])
+# Трансформации — используются из core.model_loader.TRANSFORM
+# (_transform определён ниже для обратной совместимости)
 
 
 def predict_image(image_path: str) -> dict:
@@ -191,7 +111,7 @@ def predict_image(image_path: str) -> dict:
     except Exception as e:
         return {"error": f"Не удалось открыть изображение: {e}"}
 
-    tensor = _transform(img).unsqueeze(0).to(_device)
+    tensor = TRANSFORM(img).unsqueeze(0).to(_device)
 
     with torch.no_grad():
         outputs = _model(tensor)
