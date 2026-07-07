@@ -8,22 +8,20 @@ import os
 from pathlib import Path
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# ─── Config ────────────────────────────────────────────────────────────────
-OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-VISION_M = os.getenv("VISION_MODEL", "openai/gpt-4o-mini").strip()
-REASON_M = os.getenv("REASON_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
-STRONG_M = os.getenv("STRONG_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
-REASONER_A_M = os.getenv("REASONER_A_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
-REASONER_B_M = os.getenv("REASONER_B_MODEL", "qwen/qwen3-next-80b-a3b-instruct:free").strip()
-JUDGE_M = os.getenv("JUDGE_MODEL", "openai/gpt-oss-120b:free").strip()
-VIS_FB = [m.strip() for m in os.getenv("VISION_FALLBACKS", "google/gemma-4-31b-it:free,google/gemma-4-26b-a4b-it:free").split(",") if m.strip()]
-TXT_FB = [m.strip() for m in os.getenv("TEXT_FALLBACKS", "qwen/qwen3-next-80b-a3b-instruct:free,openai/gpt-oss-120b:free,nvidia/nemotron-3-super-120b-a12b:free").split(",") if m.strip()]
-TEMP = float(os.getenv("TEMPERATURE", "0.3"))
-TOUT = int(os.getenv("TIMEOUT", "120"))
+from core.config import (
+    JUDGE_M,
+    OR_KEY,
+    REASONER_A_M,
+    REASONER_B_M,
+    REASON_M,
+    STRONG_M,
+    TEMP,
+    TOUT,
+    TXT_FB,
+    VIS_FB,
+    VISION_M,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s|%(levelname)s|%(message)s")
 log = logging.getLogger("skincoach.pipeline")
@@ -147,34 +145,43 @@ def hdr() -> dict:
     }
 
 
+async def _try_model(c: httpx.AsyncClient, m: str, msgs, mt: int) -> str | None:
+    """Attempt one model request and return content, or None to fall back."""
+    log.info(f"  -> {m}")
+    r = await c.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers=hdr(),
+        json={"model": m, "messages": msgs, "temperature": TEMP, "max_tokens": mt},
+    )
+    if r.status_code != 200:
+        log.warning(f"  {m}: {r.status_code}")
+        return None
+    d = r.json()
+    if "choices" not in d or not d["choices"]:
+        log.warning(f"  {m}: no choices")
+        return None
+    content = d["choices"][0]["message"].get("content") or ""
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    if not content.strip():
+        log.warning(f"  {m}: empty")
+        return None
+    if content.strip().upper().startswith("ERROR"):
+        log.warning(f"  {m}: error msg: {content[:100]}")
+        return None
+    log.info(f"  OK: {m}")
+    return content
+
+
 async def call_raw(msgs, mdl, fb, mt=800):
     last_e = None
     async with httpx.AsyncClient(timeout=TOUT) as c:
         for m in [mdl] + fb:
             try:
-                log.info(f"  -> {m}")
-                r = await c.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=hdr(),
-                    json={"model": m, "messages": msgs, "temperature": TEMP, "max_tokens": mt},
-                )
-                if r.status_code == 200:
-                    d = r.json()
-                    if "choices" in d and d["choices"]:
-                        content = d["choices"][0]["message"].get("content") or ""
-                        if isinstance(content, list):
-                            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-                        if not content.strip():
-                            log.warning(f"  {m}: empty")
-                            continue
-                        if content.strip().upper().startswith("ERROR"):
-                            log.warning(f"  {m}: error msg: {content[:100]}")
-                            last_e = f"{m}:{content[:100]}"
-                            continue
-                        log.info(f"  OK: {m}")
-                        return content
-                log.warning(f"  {m}: {r.status_code}")
-                last_e = f"{m}:{r.status_code}"
+                content = await _try_model(c, m, msgs, mt)
+                if content is not None:
+                    return content
+                last_e = f"{m}:non-ok"
             except httpx.TimeoutException:
                 log.warning(f"  {m}: timeout")
                 last_e = f"{m}:timeout"
