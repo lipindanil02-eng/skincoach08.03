@@ -6,12 +6,13 @@ from inference import predict_image
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any,Dict,List
-import httpx
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
+
+from core.pipeline import (pipeline_photo, pipeline_final, call_raw, rp, cm, cj, ct,
+                           format_fallback, WEEKS, W_EMOJI, FOCUSES)
 
 load_dotenv()
 
@@ -30,46 +31,6 @@ log=logging.getLogger("skincoach")
 
 # States
 S_NAME="name";S_DUR="dur";S_TRIED="tried";S_PHOTO="photo";S_QUESTIONS="questions";S_ACTIVE="active"
-
-WEEKS={1:"ПИТАНИЕ — убираем провокаторы",2:"НАРУЖНЫЙ УХОД — мыло, масло, крем",
-       3:"ЭМОЦИИ — стресс-протокол",4:"АНАЛИЗЫ — контроль и коррекция"}
-W_EMOJI={1:"🥗",2:"🧴",3:"🧠",4:"🔬"}
-FOCUSES={
-    1:{1:"Список что ел за 3 дня",2:"Исключи молочку",3:"Убери сахар",
-       4:"Добавь куркуму",5:"8 стаканов воды",6:"Анти-воспалительный смузи",7:"Итог недели"},
-    2:{1:"Серное мыло НЕ при остром",2:"Тёплая вода до 37C",3:"Крем с мочевиной на влажную кожу",
-       4:"Масло точечно после крема",5:"Серное мыло 1 раз если можно",6:"Полная схема утро+вечер",7:"Фото для сравнения"},
-    3:{1:"Дыхание 4-7-8",2:"3 ситуации обострения",3:"Точечный массаж",
-       4:"Аффирмация 10 раз",5:"Мышечное расслабление",6:"Письмо коже",7:"Связь стресс-кожа?"},
-    4:{1:"Запись: ОАК, D, ферритин, ТТГ",2:"Копрограмма",3:"Цинк и селен",
-       4:"Расшифровка результатов",5:"Коррекция добавок",6:"Персональный протокол",7:"Финальное фото"},
-}
-
-# Utils
-def rp(f,d=""):
-    p=Path(f)
-    if p.exists(): return p.read_text("utf-8").strip()
-    p2=Path("prompts")/f
-    if p2.exists(): return p2.read_text("utf-8").strip()
-    return d
-
-def cm(t):
-    t=t.replace("**","").replace("__","").replace("```","").replace("`","")
-    return "\n".join(l.lstrip("#").strip() if l.lstrip().startswith("#") else l for l in t.split("\n"))
-
-def xj(t):
-    t=t.strip()
-    for prefix in ["```json","```"]:
-        if t.startswith(prefix): t=t[len(prefix):]
-    if t.endswith("```"): t=t[:-3]
-    t=t.strip()
-    try: return json.loads(t)
-    except: pass
-    s,e=t.find("{"),t.rfind("}")
-    if s!=-1 and e>s:
-        try: return json.loads(t[s:e+1])
-        except: pass
-    raise ValueError(f"No JSON: {t[:300]}")
 
 # History
 HIST = str(Path(__file__).parent / ".hermes" / "history.json")
@@ -91,178 +52,6 @@ def gu(h,uid):
         "day":0,"week":1,"msgs":[],"created":datetime.now().isoformat()}
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
-
-# API
-def hdr(): return {"Authorization":f"Bearer {OR_KEY}","Content-Type":"application/json",
-    "HTTP-Referer":"https://t.me/skincoach_bot","X-Title":"SkinCoach"}
-
-async def call_raw(msgs,mdl,fb,mt=800):
-    last_e=None
-    async with httpx.AsyncClient(timeout=TOUT) as c:
-        for m in [mdl]+fb:
-            try:
-                log.info(f"  -> {m}")
-                r=await c.post("https://openrouter.ai/api/v1/chat/completions",headers=hdr(),
-                    json={"model":m,"messages":msgs,"temperature":TEMP,"max_tokens":mt})
-                if r.status_code==200:
-                    d=r.json()
-                    if "choices" in d and d["choices"]:
-                        ct=d["choices"][0]["message"].get("content") or ""
-                        if isinstance(ct,list): ct="".join(p.get("text","") for p in ct if isinstance(p,dict))
-                        if not ct.strip():
-                            log.warning(f"  {m}: empty"); continue
-                        log.info(f"  OK: {m}")
-                        return ct
-                log.warning(f"  {m}: {r.status_code}"); last_e=f"{m}:{r.status_code}"
-            except httpx.TimeoutException: log.warning(f"  {m}: timeout"); last_e=f"{m}:timeout"
-            except Exception as e: log.warning(f"  {m}: {e}"); last_e=str(e)
-    raise Exception(f"All down. {last_e}")
-
-async def cj(msgs,mdl,fb,mt=800): return xj(await call_raw(msgs,mdl,fb,mt))
-async def ct(msgs,mdl,fb,mt=800): return cm(await call_raw(msgs,mdl,fb,mt))
-
-# ════════════════════════════════════
-#  8-STEP PIPELINE
-# ════════════════════════════════════
-async def pipeline_photo(b64,cap,u):
-    """Steps 1-4: analyze photo and generate questions"""
-    nm=u.get("name","друг");dur=u.get("duration","?");tri=u.get("tried","?")
-    uctx=f"Имя:{nm}, давность:{dur}, пробовали:{tri}"
-
-    # STEP 1: Quality Check
-    log.info("📸 1/8 Quality...")
-    try:
-        qp=rp("1_quality.txt","Проверь качество фото. JSON.")
-        q=await cj([{"role":"system","content":qp},
-            {"role":"user","content":[{"type":"text","text":"Оцени качество фото кожи"},
-                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
-            VISION_M,VIS_FB,300)
-        if not q.get("usable",True):
-            return "ask_reshoot",q.get("suggestion","Пересними при дневном свете, крупным планом.")
-    except Exception as e:
-        log.warning(f"Quality skip: {e}")
-
-    # STEP 2: Vision Description
-    log.info("👁 2/8 Vision...")
-    vp=rp("2_vision.txt","Опиши что видно на фото кожи. JSON.")
-    try:
-        vis=await cj([{"role":"system","content":vp},
-            {"role":"user","content":[{"type":"text","text":cap or "Опиши что видишь на коже"},
-                {"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]}],
-            VISION_M,VIS_FB,500)
-    except Exception as e:
-        log.error(f"Vision fail: {e}")
-        return "error","Не удалось проанализировать фото. Попробуй ещё раз."
-    u["vision_data"]=vis
-
-    # STEP 3: Dermatology Reasoning
-    log.info("🔬 3/8 Reasoning...")
-    rp3=rp("3_reasoning.txt","Дифференциальная диагностика. JSON.")
-    ctx3=json.dumps({"vision":vis,"patient":uctx},ensure_ascii=False)
-    try:
-        reason=await cj([{"role":"system","content":rp3},{"role":"user","content":ctx3}],
-            STRONG_M,TXT_FB,600)
-    except Exception as e:
-        log.error(f"Reasoning fail: {e}")
-        reason={"hypotheses":[{"diagnosis":"требуется уточнение","probability":100,"reasoning":"не удалось провести анализ"}],
-                "primary_diagnosis":"требуется уточнение","stage":"unknown","phase":"unknown",
-                "severity":"unknown","soap_safe":False,"confidence":0}
-    u["reasoning_data"]=reason
-    u["diagnosis"]=reason.get("primary_diagnosis","не определено")
-
-    # STEP 4: Clinical Questions
-    log.info("❓ 4/8 Questions...")
-    rp4=rp("4_questions.txt","Задай 1-2 вопроса. JSON.")
-    ctx4=json.dumps({"vision":vis,"reasoning":reason,"patient":uctx},ensure_ascii=False)
-    try:
-        qs=await cj([{"role":"system","content":rp4},{"role":"user","content":ctx4}],
-            REASON_M,TXT_FB,400)
-    except:
-        qs={"questions":[],"intro":f"{nm}, я проанализировал фото."}
-    u["pending_questions"]=qs
-    return "questions",qs
-
-async def pipeline_final(u,answers_text=""):
-    """Steps 5-8: after questions answered, generate final plan"""
-    nm=u.get("name","друг");dur=u.get("duration","?");tri=u.get("tried","?")
-    vis=u.get("vision_data",{});reason=u.get("reasoning_data",{})
-    dy=u.get("day",1);wk=u.get("week",1)
-    wt=WEEKS.get(wk,"Программа");diw=((dy-1)%7)+1
-    df=FOCUSES.get(wk,{}).get(diw,"Следуй программе")
-
-    all_data=json.dumps({"vision":vis,"reasoning":reason,"patient_answers":answers_text,
-        "patient":f"Имя:{nm}, давность:{dur}, пробовали:{tri}",
-        "day":dy,"week":wk,"week_theme":wt,"day_focus":df},ensure_ascii=False)
-
-    # STEP 5: Risk Triage
-    log.info("⚠️ 5/8 Triage...")
-    rp5=rp("5_triage.txt","Определи уровень риска. JSON.")
-    try:
-        triage=await cj([{"role":"system","content":rp5},{"role":"user","content":all_data}],
-            REASON_M,TXT_FB,300)
-    except:
-        triage={"risk_level":"green","urgency":"routine"}
-    u["risk"]=triage
-
-    # STEP 6: Recommendations
-    log.info("📋 6/8 Recommendations...")
-    rp6=rp("6_recommendations.txt","Составь рекомендации. JSON.")
-    ctx6=json.dumps({"all_data":json.loads(all_data) if isinstance(all_data,str) else all_data,
-        "triage":triage},ensure_ascii=False)
-    try:
-        recs=await cj([{"role":"system","content":rp6},{"role":"user","content":ctx6}],
-            STRONG_M,TXT_FB,800)
-    except Exception as e:
-        log.error(f"Recs fail: {e}")
-        recs={"diagnosis_summary":"Анализ выполнен","morning_routine":["Мягкое очищение"],
-              "evening_routine":["Увлажнение"],"day_focus":df}
-    u["recommendations"]=recs
-
-    # STEP 7: Safety Filter
-    log.info("🛡️ 7/8 Safety...")
-    rp7=rp("7_safety.txt","Проверь безопасность. JSON.")
-    try:
-        safety=await cj([{"role":"system","content":rp7},
-            {"role":"user","content":json.dumps({"recs":recs,"triage":triage,"reasoning":reason},ensure_ascii=False)}],
-            REASON_M,TXT_FB,300)
-        if not safety.get("approved",True):
-            log.warning(f"Safety issues: {safety.get('issues')}")
-    except:
-        pass  # If safety check fails, proceed anyway
-
-    # STEP 8: Format Response
-    log.info("💬 8/8 Response...")
-    rp8=rp("8_response.txt","Собери ответ для Telegram.")
-    rp8=rp8.replace("{name}",nm).replace("{day}",str(dy)).replace("{week}",str(wk))
-    ctx8=json.dumps({"recommendations":recs,"triage":triage,"reasoning":reason,
-        "vision":vis,"name":nm,"day":dy,"week":wk,"week_theme":wt},ensure_ascii=False)
-    try:
-        final=await ct([{"role":"system","content":rp8},{"role":"user","content":ctx8}],
-            REASON_M,TXT_FB,900)
-    except Exception as e:
-        log.error(f"Response fail: {e}")
-        final=format_fallback(recs,reason,triage,u)
-    return final
-
-def format_fallback(recs,reason,triage,u):
-    nm=u.get("name","");dy=u.get("day",1);wk=u.get("week",1)
-    p=[f"🔍 {nm}, вот что я вижу:"]
-    ds=recs.get("diagnosis_summary","")
-    if ds: p.append(ds)
-    hyps=reason.get("hypotheses",[])
-    if hyps:
-        for h in hyps[:3]:
-            p.append(f"  {h.get('diagnosis','?')} — {h.get('probability',0)}%")
-    p.append(f"\nДень {dy}/28 — Неделя {wk} {W_EMOJI.get(wk,'📋')}")
-    mr=recs.get("morning_routine",[])
-    if mr: p.append("\n🧴 Утро:"); p.extend(f"  {x}" for x in mr[:3])
-    er=recs.get("evening_routine",[])
-    if er: p.append("\n🌙 Вечер:"); p.extend(f"  {x}" for x in er[:3])
-    ps=recs.get("psycho",{})
-    af=ps.get("affirmation","")
-    if af: p.append(f"\n💫 {af}")
-    p.append("\n📝 Вечером напиши: что сделал, как кожа, ощущения.")
-    return "\n".join(p)
 
 # Send
 async def send(msg,txt):
