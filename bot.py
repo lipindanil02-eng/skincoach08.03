@@ -2,19 +2,18 @@
 SkinCoach v7 — 8-слойный пайплайн + уточняющие вопросы + 28-дневная программа
 """
 import tempfile, os
-from inference import predict_image
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+load_dotenv()
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
 
 from core.pipeline import (pipeline_photo, pipeline_final, call_raw, rp, cm, cj, ct,
                            format_fallback, WEEKS, W_EMOJI, FOCUSES)
-
-load_dotenv()
 
 TOKEN=os.getenv("TELEGRAM_BOT_TOKEN","").strip()
 OR_KEY=os.getenv("OPENROUTER_API_KEY","").strip()
@@ -122,6 +121,25 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         try: await st.delete()
         except: pass
         await send(upd.message,reply)
+        try:
+            from gen_card import generate_card
+            rd = u.get("reasoning_data", {}) or {}
+            hyps = rd.get("hypotheses", []) or []
+            top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), h.get("probability", 0)) for h in hyps[:3]]
+            card_path = await asyncio.to_thread(
+                generate_card,
+                rd.get("primary_diagnosis", "Анализ завершён") or "Анализ завершён",
+                f"{rd.get('confidence', 85)}%",
+                rd.get("severity", "low") or "low",
+                top3,
+                str(upd.effective_user.id),
+            )
+            if os.path.exists(card_path):
+                with open(card_path, "rb") as f:
+                    await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
+                os.unlink(card_path)
+        except Exception as ce:
+            log.warning(f"Card gen fail: {ce}")
         return
 
     # Active program - chat
@@ -158,19 +176,53 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     ph=upd.message.photo[-1];f=await ctx.bot.get_file(ph.file_id)
     b=await f.download_as_bytearray();b64=base64.b64encode(b).decode()
 
-    # Локальная модель
+    # Локальная модель (опционально — если файла нет, пропускаем)
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp.write(b)
         tmp_path = tmp.name
     try:
-        skin_result = predict_image(tmp_path)
-        u["local_model_result"] = skin_result
+        try:
+            from inference import predict_image
+            skin_result = predict_image(tmp_path)
+            u["local_model_result"] = skin_result
+        except Exception as ml_err:
+            log.warning(f"ML model skipped: {ml_err}")
+            u["local_model_result"] = None
     finally:
         os.unlink(tmp_path)
 
     cap=(upd.message.caption or "").strip()
     u["photo_b64"]=b64[:100]
     result_type,result=await pipeline_photo(b64,cap,u)
+
+    # Send diagnosis card immediately after analysis (unique per photo)
+    try:
+        import uuid
+        from gen_card import generate_card
+        rd = u.get("reasoning_data", {}) or {}
+        hyps = rd.get("hypotheses", []) or []
+        top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), f"{float(h.get('probability', 0)):.0f}%") for h in hyps[:3]]
+        diag = rd.get("primary_diagnosis") or (hyps[0].get("diagnosis_ru", hyps[0].get("diagnosis", "?")) if hyps else "Анализ завершён")
+        # Normalise confidence: 0-1 → 0-100
+        conf_raw = rd.get("confidence", 85)
+        try:
+            conf_num = float(conf_raw) if isinstance(conf_raw, str) else conf_raw
+            if conf_num <= 1:
+                conf_num *= 100
+        except (ValueError, TypeError):
+            conf_num = 85
+        conf = f"{int(conf_num)}%"
+        card_id = f"{upd.effective_user.id}_{uuid.uuid4().hex[:8]}"
+        card_path = await asyncio.to_thread(
+            generate_card, diag, conf,
+            rd.get("severity", "low") or "low", top3, card_id,
+        )
+        if os.path.exists(card_path):
+            with open(card_path, "rb") as f:
+                await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
+            os.unlink(card_path)
+    except Exception as ce:
+        log.warning(f"Card gen fail: {ce}")
 
     try: await st.delete()
     except: pass
@@ -185,25 +237,33 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     # result_type == "questions"
     qs=result
-    intro=qs.get("intro",f"{u.get('name','')}, я проанализировал фото.")
+    intro=qs.get("intro","🔬 Ваш анализ кожи:")
     questions=qs.get("questions",[])
 
     # Show diagnosis preview
     reason=u.get("reasoning_data",{})
     hyps=reason.get("hypotheses",[])
+    is_healthy = reason.get("healthy", False) or reason.get("primary_diagnosis") == "здоровая кожа"
+    skin_assess = reason.get("skin_assessment", "") or ""
+    visual_age = reason.get("visual_age")
     diag_text=""
-    if hyps:
-        diag_text="\n\n🔬 Предварительный анализ:\n"
+    if visual_age:
+        diag_text += f"\n🔬 Кожа выглядит на ~{visual_age} лет\n"
+    if is_healthy and skin_assess:
+        diag_text += f"{skin_assess}\n"
+    elif hyps:
+        diag_text += "\n\n🔬 Предварительный анализ:\n"
         for hp in hyps[:3]:
-            diag_text+=f"  {hp.get('diagnosis','?')} — {hp.get('probability',0)}%\n"
+            pct_val = float(hp.get('probability', 0))
+            pct = f"{pct_val:.0f}%"
+            name = hp.get('diagnosis_ru', hp.get('diagnosis', '?'))
+            diag_text+=f"  {name} — {pct}\n"
 
     if questions:
-        q_text="\n\nЧтобы дать точные рекомендации, мне нужно уточнить:\n\n"
-        for i,q in enumerate(questions):
-            q_text+=f"{i+1}. {q.get('question','')}\n"
-            opts=q.get("options",[])
-            if opts: q_text+="   "+", ".join(opts)+"\n"
-        q_text+="\nОтветь на вопросы одним сообщением."
+        q_text="\n\n"
+        q=questions[0]
+        q_text+=f"{q.get('question','')}"
+
         u["state"]=S_QUESTIONS
     else:
         q_text=""

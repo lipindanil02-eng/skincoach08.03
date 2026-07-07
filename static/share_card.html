@@ -159,21 +159,6 @@ body {
     <div class="top3-section">
       <div class="label">Топ гипотез</div>
       <div id="top3List">
-        <div class="top3-item">
-          <span class="top3-rank">01</span>
-          <span class="top3-name">Акне вульгарис</span>
-          <span class="top3-pct">93.5%</span>
-        </div>
-        <div class="top3-item">
-          <span class="top3-rank">02</span>
-          <span class="top3-name">Периоральный дерматит</span>
-          <span class="top3-pct">4.2%</span>
-        </div>
-        <div class="top3-item">
-          <span class="top3-rank">03</span>
-          <span class="top3-name">Розацеа</span>
-          <span class="top3-pct">2.3%</span>
-        </div>
       </div>
     </div>
   </div>
@@ -188,7 +173,7 @@ body {
 </div>
 
 <script>
-// Data injection point — set values dynamically via URL params or JS
+function pad(n){return n<10?'0'+n:n}
 const params = new URLSearchParams(window.location.search);
 if (params.get('d')) {
   document.getElementById('diagName').textContent = params.get('d');
@@ -201,6 +186,20 @@ if (params.get('d')) {
   badge.className = 'risk-badge risk-' + risk;
   const labels = {low: '● Низкий', medium: '● Средний', high: '● Высокий — к врачу!'};
   badge.textContent = labels[risk] || labels.low;
+}
+const t = params.get('t');
+if (t) {
+  try {
+    const top3 = JSON.parse(decodeURIComponent(t));
+    const list = document.getElementById('top3List');
+    list.innerHTML = '';
+    top3.forEach((item, i) => {
+      const div = document.createElement('div');
+      div.className = 'top3-item';
+      div.innerHTML = '<span class="top3-rank">'+pad(i+1)+'</span><span class="top3-name">'+item[0]+'</span><span class="top3-pct">'+item[1]+'</span>';
+      list.appendChild(div);
+    });
+  } catch(e){}
 }
 </script>
 </body>

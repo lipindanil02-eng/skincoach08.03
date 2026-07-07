@@ -24,7 +24,9 @@ def generate_card(diag_ru: str, confidence_pct: str, risk: str = "low",
                    top3: list = None, user_id: str = "0") -> str:
     """Generate card image. Returns path to saved PNG."""
     top3 = top3 or []
-    params = f"?d={re.sub(r'[^а-яА-Яa-zA-Z0-9 ]', '', diag_ru).strip()}&c={confidence_pct.replace('%','')}&r={risk}"
+    import urllib.parse, json
+    t3_json = json.dumps(top3, ensure_ascii=False)
+    params = f"?d={re.sub(r'[^а-яА-Яa-zA-Z0-9 ]', '', diag_ru).strip()}&c={confidence_pct.replace('%','')}&r={risk}&t={urllib.parse.quote(t3_json)}"
     url = f"file:///{HTML_TPL.as_posix()}{params}"
 
     out_file = str(OUT_DIR / f"card_{user_id}.png")

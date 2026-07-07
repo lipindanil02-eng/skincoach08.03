@@ -1,35 +1,5 @@
-# Секреты и конфиги
-env.txt
 .env
-*.env
-secrets.txt
-
-# Модель ML (большой бинарный файл, хранится на HuggingFace)
-*.pth
-*.pt
-*.ckpt
-best_model.pth
-
-# Python
+class_map.json
 __pycache__/
-*.py[cod]
-*.pyo
-.venv/
+*.pyc
 venv/
-env/
-*.egg-info/
-dist/
-build/
-
-# Логи
-*.log
-logs/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp

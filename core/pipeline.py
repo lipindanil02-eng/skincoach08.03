@@ -10,17 +10,17 @@ from pathlib import Path
 import httpx
 
 from core.config import (
-    JUDGE_M,
-    OR_KEY,
-    REASONER_A_M,
-    REASONER_B_M,
-    REASON_M,
-    STRONG_M,
-    TEMP,
-    TOUT,
-    TXT_FB,
-    VIS_FB,
-    VISION_M,
+    JUDGE_MODEL,
+    OPENROUTER_API_KEY,
+    REASONER_A_MODEL,
+    REASONER_B_MODEL,
+    REASON_MODEL,
+    STRONG_MODEL,
+    TEMPERATURE,
+    TEXT_FALLBACKS,
+    TIMEOUT,
+    VISION_FALLBACKS,
+    VISION_MODEL,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s|%(levelname)s|%(message)s")
@@ -138,7 +138,7 @@ def format_fallback(recs: dict, reason: dict, triage: dict, u: dict) -> str:
 # ─── API ───────────────────────────────────────────────────────────────────
 def hdr() -> dict:
     return {
-        "Authorization": f"Bearer {OR_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/skincoach_bot",
         "X-Title": "SkinCoach",
@@ -151,7 +151,7 @@ async def _try_model(c: httpx.AsyncClient, m: str, msgs, mt: int) -> str | None:
     r = await c.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers=hdr(),
-        json={"model": m, "messages": msgs, "temperature": TEMP, "max_tokens": mt},
+        json={"model": m, "messages": msgs, "temperature": TEMPERATURE, "max_tokens": mt},
     )
     if r.status_code != 200:
         log.warning(f"  {m}: {r.status_code}")
@@ -175,7 +175,7 @@ async def _try_model(c: httpx.AsyncClient, m: str, msgs, mt: int) -> str | None:
 
 async def call_raw(msgs, mdl, fb, mt=800):
     last_e = None
-    async with httpx.AsyncClient(timeout=TOUT) as c:
+    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
         for m in [mdl] + fb:
             try:
                 content = await _try_model(c, m, msgs, mt)
@@ -219,7 +219,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ]},
             ],
-            VISION_M, VIS_FB, 300,
+            VISION_MODEL, VISION_FALLBACKS, 300,
         )
         if not q.get("usable", True):
             return "ask_reshoot", q.get("suggestion", "Пересними при дневном свете, крупным планом.")
@@ -238,7 +238,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ]},
             ],
-            VISION_M, VIS_FB, 500,
+            VISION_MODEL, VISION_FALLBACKS, 500,
         )
     except Exception as e:
         log.error(f"Vision fail: {e}")
@@ -250,24 +250,39 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
     rp3 = rp("3_reasoning.txt", "Дифференциальная диагностика. JSON.")
     prev_diag = u.get("diagnosis")
     prev_conf = u.get("reasoning_data", {}).get("confidence") if u.get("reasoning_data") else None
+    # ML model result (EfficientNet-B3), если доступен
+    ml_result = u.get("local_model_result") or {}
+    ml_diag = ml_result.get("diagnosis_ru") or ml_result.get("diagnosis") or None
+    ml_conf = ml_result.get("confidence_pct") or None
     ctx3 = json.dumps(
         {"vision": vis, "patient": uctx,
          "previous_diagnosis": prev_diag if prev_diag else None,
-         "previous_confidence": prev_conf},
+         "previous_confidence": prev_conf,
+         "ml_diagnosis": ml_diag, "ml_confidence": ml_conf},
         ensure_ascii=False,
     )
     try:
         reason_a = await cj(
             [{"role": "system", "content": rp3}, {"role": "user", "content": ctx3}],
-            REASONER_A_M, TXT_FB, 600,
+            REASONER_A_MODEL, TEXT_FALLBACKS, 600,
         )
     except Exception as e:
         log.error(f"Reasoner A fail: {e}")
-        reason_a = {
-            "hypotheses": [{"diagnosis": "требуется уточнение", "probability": 100, "reasoning": "не удалось провести анализ"}],
-            "primary_diagnosis": "требуется уточнение", "stage": "unknown", "phase": "unknown",
-            "severity": "unknown", "soap_safe": False, "confidence": 0,
-        }
+        # Fallback: используем ML результат, если доступен
+        if ml_diag:
+            ml_prob = ml_result.get("confidence", 0)
+            reason_a = {
+                "hypotheses": [{"diagnosis": ml_diag, "probability": round(ml_prob*100, 1) if ml_prob else 85,
+                               "reasoning": "диагноз на основе ML-модели"}],
+                "primary_diagnosis": ml_diag, "stage": "unknown", "phase": "unknown",
+                "severity": "unknown", "soap_safe": True, "confidence": ml_prob or 0.85,
+            }
+        else:
+            reason_a = {
+                "hypotheses": [{"diagnosis": "требуется уточнение", "probability": 100, "reasoning": "не удалось провести анализ"}],
+                "primary_diagnosis": "требуется уточнение", "stage": "unknown", "phase": "unknown",
+                "severity": "unknown", "soap_safe": False, "confidence": 0,
+            }
     u["reasoner_a"] = reason_a
     u["diagnosis"] = reason_a.get("primary_diagnosis", "не определено")
 
@@ -278,7 +293,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
     try:
         reason_b = await cj(
             [{"role": "system", "content": rp3b}, {"role": "user", "content": ctx3b}],
-            REASONER_B_M, TXT_FB, 500,
+            REASONER_B_MODEL, TEXT_FALLBACKS, 500,
         )
     except Exception as e:
         log.error(f"Reasoner B fail: {e}")
@@ -297,7 +312,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
     try:
         qs = await cj(
             [{"role": "system", "content": rp4}, {"role": "user", "content": ctx4}],
-            REASON_M, TXT_FB, 400,
+            REASON_MODEL, TEXT_FALLBACKS, 400,
         )
     except Exception:
         qs = {"questions": [], "intro": f"{nm}, я проанализировал фото."}
@@ -331,7 +346,7 @@ async def pipeline_final(u: dict, answers_text: str = ""):
     try:
         triage = await cj(
             [{"role": "system", "content": rp5}, {"role": "user", "content": all_data}],
-            REASON_M, TXT_FB, 300,
+            REASON_MODEL, TEXT_FALLBACKS, 300,
         )
     except Exception:
         triage = {"risk_level": "green", "urgency": "routine"}
@@ -352,7 +367,7 @@ async def pipeline_final(u: dict, answers_text: str = ""):
     try:
         recs = await cj(
             [{"role": "system", "content": rp6}, {"role": "user", "content": ctx6}],
-            REASONER_A_M, TXT_FB, 800,
+            REASONER_A_MODEL, TEXT_FALLBACKS, 800,
         )
     except Exception as e:
         log.error(f"Recs fail: {e}")
@@ -367,7 +382,7 @@ async def pipeline_final(u: dict, answers_text: str = ""):
         safety = await cj(
             [{"role": "system", "content": rp7},
              {"role": "user", "content": json.dumps({"recs": recs, "triage": triage, "reasoning": reason}, ensure_ascii=False)}],
-            REASON_M, TXT_FB, 300,
+            REASON_MODEL, TEXT_FALLBACKS, 300,
         )
         if not safety.get("approved", True):
             log.warning(f"Safety issues: {safety.get('issues')}")
@@ -388,7 +403,7 @@ async def pipeline_final(u: dict, answers_text: str = ""):
     try:
         final = await ct(
             [{"role": "system", "content": rp8}, {"role": "user", "content": ctx8}],
-            JUDGE_M, TXT_FB, 900,
+            JUDGE_MODEL, TEXT_FALLBACKS, 900,
         )
     except Exception as e:
         log.error(f"Response fail: {e}")
