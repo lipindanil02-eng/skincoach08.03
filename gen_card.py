@@ -203,23 +203,23 @@ def _gen_pil(diag_ru, confidence_pct, risk, top3, out_file):
 
     # --- Stats cards ---
     card_w = (W - 2 * M - 16) // 2
-    card_h = 72
+    card_h = 84
 
     # Card 1: Confidence
     c1x = M
     _rrect(c1x, cy, c1x + card_w, cy + card_h, 16,
            fill=(255, 255, 255, 12), outline=(255, 255, 255, 16))
-    draw.text((c1x + 18, cy + 12), "УВЕРЕННОСТЬ", fill=(255, 255, 255, 100),
-              font=_font(10, bold=True))
-    draw.text((c1x + 18, cy + 32), str(confidence_pct), fill=C_WHITE,
-              font=_font(24, bold=True))
+    draw.text((c1x + 20, cy + 20), "УВЕРЕННОСТЬ", fill=(255, 255, 255, 100),
+              font=_font(11, bold=True))
+    draw.text((c1x + 20, cy + 44), str(confidence_pct), fill=C_WHITE,
+              font=_font(26, bold=True))
 
     # Card 2: Risk
     c2x = c1x + card_w + 16
     _rrect(c2x, cy, c2x + card_w, cy + card_h, 16,
            fill=(255, 255, 255, 12), outline=(255, 255, 255, 16))
-    draw.text((c2x + 18, cy + 12), "УРОВЕНЬ РИСКА", fill=(255, 255, 255, 100),
-              font=_font(10, bold=True))
+    draw.text((c2x + 20, cy + 20), "УРОВЕНЬ РИСКА", fill=(255, 255, 255, 100),
+              font=_font(11, bold=True))
 
     risk_label = {"low": "Низкий", "medium": "Средний", "high": "Высокий — к врачу!"}
     risk_colors = {"low": C_GREEN, "medium": C_YELLOW, "high": C_RED}
@@ -227,10 +227,10 @@ def _gen_pil(diag_ru, confidence_pct, risk, top3, out_file):
     rcol = risk_colors.get(risk, C_GREEN)
 
     badge_txt = f"● {rlbl}"
-    bf = _font(12, bold=True)
+    bf = _font(13, bold=True)
     bb = draw.textbbox((0, 0), badge_txt, font=bf)
     bw, bh = bb[2] - bb[0], bb[3] - bb[1]
-    bx, by = c2x + 18, cy + 34
+    bx, by = c2x + 20, cy + 44
     _rrect(bx, by, bx + bw + 28, by + bh + 12, 20,
            fill=(*rcol, 38), outline=(*rcol, 60))
     draw.text((bx + 14, by + 6), badge_txt, fill=rcol, font=bf)
@@ -244,25 +244,28 @@ def _gen_pil(diag_ru, confidence_pct, risk, top3, out_file):
         cy += 24
 
         for i, (name, pct) in enumerate(top3[:3]):
-            ih = 44
+            ih = 48
             _rrect(M, cy, W - M, cy + ih, 12,
                    fill=(255, 255, 255, 8), outline=(255, 255, 255, 12))
 
+            # Fixed-width rank badge (Chrome-like: 30px)
             rank = f"{i + 1:02d}"
             rf = _font(14, bold=True)
-            rb = draw.textbbox((0, 0), rank, font=rf)
-            rw, rh = rb[2] - rb[0], rb[3] - rb[1]
-            draw.text((M + 16, cy + (ih - rh) // 2 - rb[1]),
+            draw.text((M + 16, cy + (ih - 14) // 2),
                       rank, fill=(255, 255, 255, 76), font=rf)
 
-            draw.text((M + 16 + rw + 16, cy + (ih - 1) // 2 - 8),
+            # Name — left-aligned after rank
+            name_x = M + 16 + 30
+            draw.text((name_x, cy + (ih - 15) // 2),
                       str(name)[:35], fill=C_WHITE, font=_font(15))
 
+            # Percentage — right-aligned
+            pct_str = str(pct)
             pf = _font(14, bold=True)
-            pb = draw.textbbox((0, 0), str(pct), font=pf)
-            pw, ph = pb[2] - pb[0], pb[3] - pb[1]
-            draw.text((W - M - pw - 16, cy + (ih - ph) // 2 - pb[1]),
-                      str(pct), fill=(255, 255, 255, 150), font=pf)
+            pb = draw.textbbox((0, 0), pct_str, font=pf)
+            pw = pb[2] - pb[0]
+            draw.text((W - M - pw - 16, cy + (ih - 14) // 2),
+                      pct_str, fill=(255, 255, 255, 150), font=pf)
 
             cy += ih + 8
 
