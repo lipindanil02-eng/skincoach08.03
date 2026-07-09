@@ -9,13 +9,18 @@ import sys
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(BACKEND_ROOT / ".env", override=True)
 
+from core.config import LLM_AVAILABLE
 from core import pipeline as core_pipeline
 from core.pipeline import pipeline_final, pipeline_photo
 
@@ -26,16 +31,37 @@ log = logging.getLogger("skincoach.web.analyze")
 
 router = APIRouter(prefix="/api/analyze", tags=["analyze"])
 
-ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://localhost:8001")
+ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://localhost:8001").strip()
 
-# Проверяем, сконфигурирован ли OpenRouter
-OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-LLM_AVAILABLE = bool(OR_KEY) and OR_KEY != ""
+ML_LABELS = {
+    "melanoma": "подозрение на меланому",
+    "nevus": "невус",
+    "other": "неспецифическое кожное изменение",
+}
+
+
+def public_ml_label(value: str | None) -> str | None:
+    if not value:
+        return value
+    return ML_LABELS.get(str(value).strip().lower(), value)
+
+
+def public_ml_result(result: dict) -> dict:
+    clean = dict(result or {})
+    predictions = []
+    for item in clean.get("predictions", []) or []:
+        prediction = dict(item)
+        raw_name = prediction.get("class_name")
+        prediction["class_name"] = public_ml_label(raw_name)
+        predictions.append(prediction)
+    clean["predictions"] = predictions
+    clean["top_class"] = public_ml_label(clean.get("top_class"))
+    return clean
 
 
 async def call_ml_service(image_bytes: bytes) -> dict:
     """Вызывает ML-сервис. Если модель не загружена — триггерит загрузку и сразу возвращает."""
-    if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
+    if not ML_SERVICE_URL:
         return {"status": "skipped", "message": "ML_SERVICE_URL not configured"}
     
     # Проверяем статус модели
@@ -88,7 +114,7 @@ async def analyze_photo(
     b64 = base64.b64encode(contents).decode("utf-8")
 
     # 1. ML-предсказание (опционально)
-    ml_result = await call_ml_service(contents)
+    ml_result = public_ml_result(await call_ml_service(contents))
     ml_top = ml_result.get("top_class")
     ml_conf = ml_result.get("confidence", 0.0)
     ml_status = ml_result.get("status", "ok")
@@ -248,7 +274,7 @@ async def test_ml():
     """Тест ML-сервиса: шлёт тестовую картинку, возвращает результат."""
     result = {"ml_service": {"url": ML_SERVICE_URL, "available": False}}
     
-    if not ML_SERVICE_URL or ML_SERVICE_URL == "http://localhost:8001":
+    if not ML_SERVICE_URL:
         result["ml_service"]["error"] = "not configured"
         return result
     
@@ -262,7 +288,7 @@ async def test_ml():
             result["ml_service"]["status_code"] = r.status_code
             if r.status_code == 200:
                 result["ml_service"]["available"] = True
-                result["ml_service"]["response"] = r.json()
+                result["ml_service"]["response"] = public_ml_result(r.json())
             else:
                 result["ml_service"]["error"] = f"HTTP {r.status_code}"
                 try:
@@ -282,7 +308,7 @@ async def debug_status():
     """Диагностика: что работает на сервере."""
     ml_status = "unknown"
     ml_info = {}
-    if ML_SERVICE_URL and ML_SERVICE_URL != "http://localhost:8001":
+    if ML_SERVICE_URL:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 r = await client.get(f"{ML_SERVICE_URL}/")
@@ -300,13 +326,13 @@ async def debug_status():
         "version": "v8",
         "llm_configured": LLM_AVAILABLE,
         "llm_models": {
-            "vision": core_pipeline.VISION_M,
-            "reasoner_a": core_pipeline.REASONER_A_M,
-            "reasoner_b": core_pipeline.REASONER_B_M,
-            "reason": core_pipeline.REASON_M,
-            "judge": core_pipeline.JUDGE_M,
-            "vision_fallbacks": core_pipeline.VIS_FB,
-            "text_fallbacks": core_pipeline.TXT_FB,
+            "vision": core_pipeline.VISION_MODEL,
+            "reasoner_a": core_pipeline.REASONER_A_MODEL,
+            "reasoner_b": core_pipeline.REASONER_B_MODEL,
+            "reason": core_pipeline.REASON_MODEL,
+            "judge": core_pipeline.JUDGE_MODEL,
+            "vision_fallbacks": core_pipeline.VISION_FALLBACKS,
+            "text_fallbacks": core_pipeline.TEXT_FALLBACKS,
         } if LLM_AVAILABLE else {},
         "ml_service_url": ML_SERVICE_URL,
         "ml_service_status": ml_status,

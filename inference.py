@@ -9,6 +9,7 @@ from PIL import Image
 from core.model_loader import load_model as _load_model_shared, TRANSFORM
 
 CONFIDENCE_THRESHOLD = 0.5
+HIDDEN_CLASSES = {"other"}
 
 CLASS_LABELS_RU = {
     # Онкологические / предраковые
@@ -72,7 +73,7 @@ CLASS_LABELS_RU = {
     "pityriasis_rosea":             "Розовый лишай",
     "pemphigus":                    "Пузырчатка",
     # Другое
-    "other":                        "Другое заболевание",
+    "other":                        "Требуется уточнение",
 }
 
 
@@ -129,21 +130,30 @@ def predict_image(image_path: str) -> dict:
     else:
         idx_to_class = {v: k for k, v in _class_map.items()}
 
-    best_class = idx_to_class.get(int(top_idx[0]), f"class_{top_idx[0]}")
-    best_prob = float(top_probs[0])
-    diagnosis_ru = get_label_ru(best_class)
-    reliable = best_prob >= CONFIDENCE_THRESHOLD
+    raw_best_class = idx_to_class.get(int(top_idx[0]), f"class_{top_idx[0]}")
+    raw_best_prob = float(top_probs[0])
+    best_class = raw_best_class
+    best_prob = raw_best_prob
+    hidden_best = str(best_class).strip().lower() in HIDDEN_CLASSES
+    if hidden_best:
+        best_class = "needs_clarification"
+    diagnosis_ru = "Требуется уточнение" if best_class == "needs_clarification" else get_label_ru(best_class)
+    reliable = (best_prob >= CONFIDENCE_THRESHOLD) and not hidden_best
 
     top3 = []
     for idx, prob in zip(top_idx, top_probs):
         cls = idx_to_class.get(int(idx), f"class_{idx}")
+        if str(cls).strip().lower() in HIDDEN_CLASSES:
+            continue
         top3.append({
             "diagnosis": cls,
             "diagnosis_ru": get_label_ru(cls),
             "confidence_pct": f"{float(prob)*100:.1f}%"
         })
 
-    if reliable:
+    if hidden_best:
+        message = "🔬 Фото требует уточнения: модель не дала конкретный видимый диагноз."
+    elif reliable:
         message = f"🔬 Модель определила: {diagnosis_ru} (уверенность {best_prob*100:.1f}%)"
     else:
         message = f"🔬 Вероятнее всего: {diagnosis_ru} ({best_prob*100:.1f}% — требует уточнения)"
