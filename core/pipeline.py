@@ -250,10 +250,11 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
     rp3 = rp("3_reasoning.txt", "Дифференциальная диагностика. JSON.")
     prev_diag = u.get("diagnosis")
     prev_conf = u.get("reasoning_data", {}).get("confidence") if u.get("reasoning_data") else None
-    # ML model result (EfficientNet-B3), если доступен
+    # ML model result (EfficientNet-B3), если доступен — НЕ передаём если кожа здоровая
+    is_healthy_vision = vis.get("healthy") if isinstance(vis, dict) else False
     ml_result = u.get("local_model_result") or {}
-    ml_diag = ml_result.get("diagnosis_ru") or ml_result.get("diagnosis") or None
-    ml_conf = ml_result.get("confidence_pct") or None
+    ml_diag = (ml_result.get("diagnosis_ru") or ml_result.get("diagnosis") or None) if not is_healthy_vision else None
+    ml_conf = ml_result.get("confidence_pct") if not is_healthy_vision else None
     ctx3 = json.dumps(
         {"vision": vis, "patient": uctx,
          "previous_diagnosis": prev_diag if prev_diag else None,
