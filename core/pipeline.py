@@ -402,10 +402,17 @@ async def pipeline_final(u: dict, answers_text: str = ""):
         ensure_ascii=False,
     )
     try:
-        final = await ct(
+        final_raw = await call_raw(
             [{"role": "system", "content": rp8}, {"role": "user", "content": ctx8}],
             JUDGE_MODEL, TEXT_FALLBACKS, 900,
         )
+        try:
+            j = xj(final_raw)
+            final = cm(str(j.get("final_answer") or ""))
+            if not final.strip():
+                raise ValueError("empty final_answer")
+        except Exception:
+            final = cm(final_raw)
     except Exception as e:
         log.error(f"Response fail: {e}")
         final = format_fallback(recs, reason, triage, u)

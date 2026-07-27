@@ -11,7 +11,7 @@ load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder,CommandHandler,MessageHandler,ContextTypes,filters
+from telegram.ext import ApplicationBuilder,CommandHandler,CallbackQueryHandler,MessageHandler,ContextTypes,filters
 
 from core.pipeline import (pipeline_photo, pipeline_final, call_raw, rp, cm, cj, ct,
                            format_fallback, WEEKS, W_EMOJI, FOCUSES)
@@ -120,6 +120,13 @@ async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
     await upd.message.chat.send_action(ChatAction.TYPING)
+
+    # Name change from /settings
+    if u.get("awaiting_name"):
+        u["name"]=txt.strip()[:30] or u.get("name")
+        u["awaiting_name"]=False;sh(h)
+        await upd.message.reply_text(f"Ок, {u['name']} ✌️")
+        return
 
     # Onboarding
     if u["state"]==S_NAME:
@@ -373,7 +380,66 @@ async def cmd_help(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         "SkinCoach — 8-ступенчатый анализ кожи:\n\n"
         "📸 Фото — полный анализ с диагнозом и вероятностями\n"
         "💬 Текст — вопросы, отчёты\n\n"
-        "/next — следующий день\n/status — прогресс + диагноз\n/start — заново")
+        "/next — следующий день\n/status — прогресс + диагноз\n"
+        "/rank — оценка кожи\n/profile — профиль\n/settings — настройки\n/start — заново")
+
+async def cmd_rank(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
+    vis=u.get("vision_data") or {}
+    ss=vis.get("skin_score") or {}
+    total=ss.get("total")
+    if total is None:
+        await upd.message.reply_text("Пока нет оценки кожи — пришли фото для анализа 📸")
+        return
+    total=int(pct(total))
+    bar="█"*(total//10)+"░"*(10-total//10)
+    grade=("Отличная" if total>=90 else "Хорошая" if total>=75 else "Средняя" if total>=60
+           else "Требует внимания" if total>=45 else "Нужна программа")
+    lines=[f"🏆 Оценка кожи: {total}/100\n[{bar}] {grade}\n"]
+    for k,lbl in (("tone","Тон"),("hydration","Увлажнённость"),("texture","Текстура"),
+                  ("vitality","Сияние"),("cleanliness","Чистота"),("youth","Молодость")):
+        v=ss.get(k)
+        if v is not None: lines.append(f"  {lbl}: {v}/15")
+    ea=ss.get("eye_area")
+    if ea is not None: lines.append(f"  Зона глаз: {ea}/10")
+    va=vis.get("visual_age")
+    if va: lines.append(f"\nВизуальный возраст: ~{va}")
+    lines.append("\n📸 Новое фото — обновлю оценку")
+    await upd.message.reply_text("\n".join(lines))
+
+async def cmd_profile(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    h=lh();u=gu(h,upd.effective_user.id)
+    day=u.get("day",0);wk=u.get("week",1)
+    wt=WEEKS.get(wk,"Программа") if day>0 else "ещё не начата"
+    diag=u.get("diagnosis") or "нет — пришли фото 📸"
+    vis=u.get("vision_data") or {}
+    ss=(vis.get("skin_score") or {}).get("total")
+    score_line=f"\nОценка кожи: {int(pct(ss))}/100" if ss is not None else ""
+    created=(u.get("created") or "")[:10]
+    await upd.message.reply_text(
+        f"👤 {u.get('name','друг')}\n\n"
+        f"Диагноз: {diag}{score_line}\n"
+        f"Программа: день {day}/28, неделя {wk} — {wt}\n"
+        f"С нами с: {created}\n\n"
+        "/rank — детали оценки\n/settings — настройки")
+
+async def cmd_settings(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Сменить имя",callback_data="set:name")],
+        [InlineKeyboardButton("🔄 Сбросить программу",callback_data="set:reset")],
+    ])
+    await upd.message.reply_text("⚙️ Настройки:",reply_markup=kb)
+
+async def handle_settings_cb(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
+    q=upd.callback_query
+    await q.answer()
+    h=lh();u=gu(h,q.from_user.id)
+    if q.data=="set:name":
+        u["awaiting_name"]=True;sh(h)
+        await q.message.reply_text("Как тебя теперь называть?")
+    elif q.data=="set:reset":
+        reset_analysis(u);u["state"]=S_PHOTO;sh(h)
+        await q.message.reply_text("Программа сброшена. Пришли новое фото 📸")
 
 def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
@@ -384,6 +450,10 @@ def main():
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
     app.add_handler(CommandHandler("status",cmd_status))
+    app.add_handler(CommandHandler("rank",cmd_rank))
+    app.add_handler(CommandHandler("profile",cmd_profile))
+    app.add_handler(CommandHandler("settings",cmd_settings))
+    app.add_handler(CallbackQueryHandler(handle_settings_cb,pattern="^set:"))
     app.add_handler(MessageHandler(filters.PHOTO,handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
     log.info("="*50);log.info("  SkinCoach v7 — 8-step pipeline");log.info("="*50)
