@@ -308,7 +308,7 @@ async def pipeline_photo(b64: str, cap: str, u: dict):
 
     # STEP 4: Clinical Questions
     log.info("❓ 4/8 Questions...")
-    rp4 = rp("4_questions.txt", "Задай 1-2 вопроса. JSON.")
+    rp4 = rp("4_questions.txt", "Задай ровно 1 короткий уточняющий вопрос без вариантов ответа. JSON.")
     ctx4 = json.dumps({"vision": vis, "reasoning": reason, "patient": uctx}, ensure_ascii=False)
     try:
         qs = await cj(

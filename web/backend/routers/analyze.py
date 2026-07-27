@@ -36,8 +36,9 @@ ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://localhost:8001").strip()
 ML_LABELS = {
     "melanoma": "подозрение на меланому",
     "nevus": "невус",
-    "other": "неспецифическое кожное изменение",
 }
+
+HIDDEN_ML_LABELS = {"other", "другое состояние"}
 
 
 def public_ml_label(value: str | None) -> str | None:
@@ -48,14 +49,22 @@ def public_ml_label(value: str | None) -> str | None:
 
 def public_ml_result(result: dict) -> dict:
     clean = dict(result or {})
+    raw_top = str(clean.get("top_class") or "").strip().lower()
     predictions = []
     for item in clean.get("predictions", []) or []:
         prediction = dict(item)
         raw_name = prediction.get("class_name")
+        if str(raw_name or "").strip().lower() in HIDDEN_ML_LABELS:
+            continue
         prediction["class_name"] = public_ml_label(raw_name)
         predictions.append(prediction)
     clean["predictions"] = predictions
-    clean["top_class"] = public_ml_label(clean.get("top_class"))
+    if raw_top in HIDDEN_ML_LABELS and predictions:
+        clean["top_class"] = predictions[0].get("class_name")
+        clean["confidence"] = predictions[0].get("probability", clean.get("confidence", 0.0))
+        clean["needs_clarification"] = True
+    else:
+        clean["top_class"] = public_ml_label(clean.get("top_class"))
     return clean
 
 

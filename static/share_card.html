@@ -12,7 +12,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 .card {
-  width: 800px; min-height: 600px; border-radius: 24px;
+  width: 800px; min-height: 700px; border-radius: 24px;
   background: linear-gradient(165deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
   padding: 40px; position: relative; overflow: hidden;
   box-shadow: 0 20px 60px rgba(0,0,0,0.5);
@@ -52,7 +52,7 @@ body {
   padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 600;
   border: 1px solid rgba(233,69,96,0.3);
 }
-.content { padding: 30px 0; }
+.content { padding: 28px 0 24px; }
 .diagnosis-section { margin-bottom: 24px; }
 .label { color: rgba(255,255,255,0.5); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
 .diagnosis-name {
@@ -99,6 +99,23 @@ body {
 .top3-rank { color: rgba(255,255,255,0.3); font-weight: 700; font-size: 14px; width: 30px; }
 .top3-name { color: #fff; font-size: 15px; flex: 1; }
 .top3-pct { color: rgba(255,255,255,0.6); font-size: 14px; font-weight: 600; }
+.value-strip {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+  margin: 22px 0 24px;
+}
+.value-item {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px; padding: 14px 12px;
+}
+.value-icon { font-size: 20px; margin-bottom: 8px; }
+.value-title { color: #fff; font-size: 14px; font-weight: 700; line-height: 1.2; }
+.value-sub { color: rgba(255,255,255,0.48); font-size: 12px; margin-top: 4px; line-height: 1.25; }
+.cta-line {
+  margin-top: 16px; padding: 14px 16px; border-radius: 16px;
+  background: linear-gradient(90deg, rgba(233,69,96,0.22), rgba(255,107,129,0.12));
+  color: #fff; font-weight: 700; font-size: 17px;
+  border: 1px solid rgba(233,69,96,0.22);
+}
 .footer {
   display: flex; justify-content: space-between; align-items: center;
   padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.08);
@@ -134,9 +151,9 @@ body {
 
   <div class="content">
     <div class="diagnosis-section">
-      <div class="label">Диагноз</div>
+      <div class="label">AI-разбор кожи</div>
       <div class="diagnosis-name" id="diagName">Акне вульгарис</div>
-      <div class="diagnosis-sub" id="diagSub">Papulo-pustular, стадия обострения</div>
+      <div class="diagnosis-sub" id="diagSub">результат по фото + первый шаг программы</div>
     </div>
 
     <div class="confidence-bar">
@@ -156,16 +173,36 @@ body {
       </div>
     </div>
 
+    <div class="value-strip">
+      <div class="value-item">
+        <div class="value-icon">📸</div>
+        <div class="value-title">Фото</div>
+        <div class="value-sub">анализ за 30 секунд</div>
+      </div>
+      <div class="value-item">
+        <div class="value-icon">🧴</div>
+        <div class="value-title">План</div>
+        <div class="value-sub">утро и вечер</div>
+      </div>
+      <div class="value-item">
+        <div class="value-icon">🎯</div>
+        <div class="value-title">28 дней</div>
+        <div class="value-sub">понятные шаги</div>
+      </div>
+    </div>
+
     <div class="top3-section">
-      <div class="label">Топ гипотез</div>
+      <div class="label">Что проверил AI</div>
       <div id="top3List">
       </div>
     </div>
+
+    <div class="cta-line">Хочешь такой разбор? Скинь фото в SkinCoach</div>
   </div>
 
   <div class="footer">
     <div>
-      <div class="footer-text">Попробовать бесплатно</div>
+      <div class="footer-text">Бесплатный AI-анализ кожи</div>
       <div class="footer-bot">@kinesispro01_bot</div>
     </div>
     <div class="qr-placeholder">📱</div>
@@ -177,20 +214,21 @@ function pad(n){return n<10?'0'+n:n}
 const params = new URLSearchParams(window.location.search);
 if (params.get('d')) {
   document.getElementById('diagName').textContent = params.get('d');
-  document.getElementById('confValue').textContent = params.get('c') || '93.5%';
+  const confRaw = params.get('c') || '93.5';
+  document.getElementById('confValue').textContent = confRaw.toString().includes('%') ? confRaw : confRaw + '%';
   const pct = parseInt(params.get('c')) || 93;
   document.getElementById('confFill').style.width = Math.min(pct, 100) + '%';
   
   const risk = params.get('r') || 'low';
   const badge = document.getElementById('riskBadge');
   badge.className = 'risk-badge risk-' + risk;
-  const labels = {low: '● Низкий', medium: '● Средний', high: '● Высокий — к врачу!'};
+  const labels = {low: '● Низкий', medium: '● Средний', high: '● Высокий'};
   badge.textContent = labels[risk] || labels.low;
 }
 const t = params.get('t');
 if (t) {
   try {
-    const top3 = JSON.parse(decodeURIComponent(t));
+    const top3 = JSON.parse(t);
     const list = document.getElementById('top3List');
     list.innerHTML = '';
     top3.forEach((item, i) => {

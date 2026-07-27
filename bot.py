@@ -5,6 +5,7 @@ import tempfile, os
 import asyncio,json,os,sys,base64,logging
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -24,6 +25,7 @@ VIS_FB=[m.strip() for m in os.getenv("VISION_FALLBACKS","google/gemini-2.5-flash
 TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","google/gemini-2.5-flash-preview,arcee-ai/trinity-large-preview:free").split(",") if m.strip()]
 TEMP=float(os.getenv("TEMPERATURE","0.3"))
 TOUT=int(os.getenv("TIMEOUT","120"))
+PUBLIC_BOT_USERNAME=os.getenv("PUBLIC_BOT_USERNAME","kinesispro01_bot").strip().lstrip("@")
 
 logging.basicConfig(level=logging.INFO,format="%(asctime)s|%(levelname)s|%(message)s")
 log=logging.getLogger("skincoach")
@@ -52,6 +54,34 @@ def gu(h,uid):
     return h[u]
 def tm(m): return m[-30:] if len(m)>30 else m
 
+def pct(v, default=0):
+    try:
+        n=float(str(v).replace("%","").strip())
+        if n<=1: n*=100
+        return max(0,min(100,n))
+    except (ValueError,TypeError):
+        return default
+
+def reset_analysis(u):
+    for k in ("vision_data","reasoning_data","diagnosis","risk","recommendations",
+              "pending_questions","photo_b64","local_model_result"):
+        u[k]=None
+    u["day"]=0;u["week"]=1;u["msgs"]=[]
+
+def share_kb(text="Бесплатный AI-анализ кожи по фото"):
+    bot_url=f"https://t.me/{PUBLIC_BOT_USERNAME}"
+    url=f"https://t.me/share/url?url={quote(bot_url)}&text={quote(text)}"
+    return InlineKeyboardMarkup([[InlineKeyboardButton("👥 Поделиться", url=url)]])
+
+async def send_program_cta(msg):
+    await msg.reply_text(
+        "Готово. Дальше веду тебя по программе:\n\n"
+        "/next — следующий день\n"
+        "/status — прогресс\n"
+        "📸 новое фото — повторный анализ",
+        reply_markup=share_kb("Я прошел бесплатный AI-анализ кожи в SkinCoach")
+    )
+
 # Send
 async def send(msg,txt):
     if len(txt)<=4000: await msg.reply_text(txt); return
@@ -70,18 +100,22 @@ async def send(msg,txt):
 async def cmd_start(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     h=lh();uid=str(upd.effective_user.id)
     h[uid]=gu(h,upd.effective_user.id)
-    h[uid]["state"]=S_NAME;h[uid]["msgs"]=[]
+    tg_user=upd.effective_user
+    h[uid]["state"]=S_PHOTO;h[uid]["msgs"]=[]
+    h[uid]["name"]=tg_user.first_name or tg_user.username or "друг"
+    h[uid]["duration"]=h[uid].get("duration") or "пока не указано"
+    h[uid]["tried"]=h[uid].get("tried") or "пока не указано"
+    reset_analysis(h[uid])
     sh(h)
     await upd.message.reply_text(
         "🔬 Бесплатный AI-анализ кожи по фото.\n\n"
-        "Я определяю акне, экзему, псориаз, дерматит и ещё 50+ состояний.\n"
-        "8-ступенчатый анализ + программа ухода 28 дней.\n\n"
-        "Для начала — как тебя зовут?")
+        "Отправь фото проблемного участка кожи — сразу покажу результат и соберу первый шаг программы.\n\n"
+        "Как снять:\n"
+        "• дневной свет\n"
+        "• крупный план\n"
+        "• без фильтров и размытия")
     # Share button on start
-    share_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("👥 Пригласить друга", url="https://t.me/share/url?url=https://t.me/Bottestvghh_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
-    ]])
-    await upd.message.reply_text("Знаешь кого-то с проблемами кожи? Поделись ботом 👇", reply_markup=share_kb)
+    await upd.message.reply_text("Знаешь кого-то с проблемами кожи? Поделись ботом 👇", reply_markup=share_kb())
 
 async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;txt=upd.message.text;h=lh();u=gu(h,uid)
@@ -103,7 +137,10 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
             "Дневной свет, крупный план.\nМой 8-ступенчатый анализ определит тип, стадию и составит план.")
         return
     if u["state"]==S_PHOTO:
-        await upd.message.reply_text(f"{u.get('name','')}, мне нужно фото. 📸")
+        await upd.message.reply_text(
+            f"{u.get('name','')}, сначала пришли фото кожи 📸\n\n"
+            "После анализа я задам один уточняющий вопрос и соберу план."
+        )
         return
 
     # Answers to clinical questions
@@ -111,35 +148,25 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         u["state"]=S_ACTIVE
         if u["day"]==0: u["day"]=1;u["week"]=1
         st=await upd.message.reply_text("Принял ответы. Генерирую персональный план... ⏳")
+        answers_text=txt
+        pending=u.get("pending_questions") or []
+        if pending:
+            q_lines=[]
+            for i,q in enumerate(pending,1):
+                q_lines.append(f"Вопрос {i}: {q.get('question','')}")
+            answers_text="\n".join(q_lines)+f"\n\nОтвет пользователя: {txt}"
         try:
-            reply=await pipeline_final(u,txt)
+            reply=await pipeline_final(u,answers_text)
         except Exception as e:
             reply=f"Ошибка генерации плана. Попробуй /next"; log.error(f"Final:{e}")
+        u["pending_questions"]=None
         u["msgs"].append({"role":"user","content":txt})
         u["msgs"].append({"role":"assistant","content":reply})
         u["msgs"]=tm(u["msgs"]);sh(h)
         try: await st.delete()
         except: pass
         await send(upd.message,reply)
-        try:
-            from gen_card import generate_card
-            rd = u.get("reasoning_data", {}) or {}
-            hyps = rd.get("hypotheses", []) or []
-            top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), h.get("probability", 0)) for h in hyps[:3]]
-            card_path = await asyncio.to_thread(
-                generate_card,
-                rd.get("primary_diagnosis", "Анализ завершён") or "Анализ завершён",
-                f"{rd.get('confidence', 85)}%",
-                rd.get("severity", "low") or "low",
-                top3,
-                str(upd.effective_user.id),
-            )
-            if os.path.exists(card_path):
-                with open(card_path, "rb") as f:
-                    await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
-                os.unlink(card_path)
-        except Exception as ce:
-            log.warning(f"Card gen fail: {ce}")
+        await send_program_cta(upd.message)
         return
 
     # Active program - chat
@@ -163,8 +190,13 @@ async def handle_text(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
-    if u["state"] in (S_NAME,S_DUR,S_TRIED):
-        await upd.message.reply_text("Сначала познакомимся. /start"); return
+    if not u.get("name"):
+        tg_user=upd.effective_user
+        u["name"]=tg_user.first_name or tg_user.username or "друг"
+    if not u.get("duration"):
+        u["duration"]="пока не указано"
+    if not u.get("tried"):
+        u["tried"]="пока не указано"
 
     st=await upd.message.reply_text(
         "📸 Фото получено. Запускаю 8-ступенчатый анализ...\n\n"
@@ -193,36 +225,15 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
 
     cap=(upd.message.caption or "").strip()
     u["photo_b64"]=b64[:100]
-    result_type,result=await pipeline_photo(b64,cap,u)
-
-    # Send diagnosis card immediately after analysis (unique per photo)
     try:
-        import uuid
-        from gen_card import generate_card
-        rd = u.get("reasoning_data", {}) or {}
-        hyps = rd.get("hypotheses", []) or []
-        top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), f"{float(h.get('probability', 0)):.0f}%") for h in hyps[:3]]
-        diag = rd.get("primary_diagnosis") or (hyps[0].get("diagnosis_ru", hyps[0].get("diagnosis", "?")) if hyps else "Анализ завершён")
-        # Normalise confidence: 0-1 → 0-100
-        conf_raw = rd.get("confidence", 85)
-        try:
-            conf_num = float(conf_raw) if isinstance(conf_raw, str) else conf_raw
-            if conf_num <= 1:
-                conf_num *= 100
-        except (ValueError, TypeError):
-            conf_num = 85
-        conf = f"{int(conf_num)}%"
-        card_id = f"{upd.effective_user.id}_{uuid.uuid4().hex[:8]}"
-        card_path = await asyncio.to_thread(
-            generate_card, diag, conf,
-            rd.get("severity", "low") or "low", top3, card_id,
-        )
-        if os.path.exists(card_path):
-            with open(card_path, "rb") as f:
-                await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
-            os.unlink(card_path)
-    except Exception as ce:
-        log.warning(f"Card gen fail: {ce}")
+        result_type,result=await pipeline_photo(b64,cap,u)
+    except Exception as e:
+        log.error(f"Photo pipeline:{e}")
+        try: await st.delete()
+        except: pass
+        await upd.message.reply_text("Анализ сейчас не прошёл. Попробуй отправить фото ещё раз через минуту.")
+        sh(h)
+        return
 
     try: await st.delete()
     except: pass
@@ -234,6 +245,28 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     if result_type=="error":
         await upd.message.reply_text(result)
         sh(h); return
+
+    # Send diagnosis card immediately after analysis (unique per photo)
+    try:
+        import uuid
+        from gen_card import generate_card
+        rd = u.get("reasoning_data", {}) or {}
+        hyps = rd.get("hypotheses", []) or []
+        top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), f"{pct(h.get('probability', 0)):.0f}%") for h in hyps[:3]]
+        diag = rd.get("primary_diagnosis") or (hyps[0].get("diagnosis_ru", hyps[0].get("diagnosis", "?")) if hyps else "Анализ завершён")
+        # Normalise confidence: 0-1 → 0-100
+        conf = f"{int(pct(rd.get('confidence', 85),85))}%"
+        card_id = f"{upd.effective_user.id}_{uuid.uuid4().hex[:8]}"
+        card_path = await asyncio.to_thread(
+            generate_card, diag, conf,
+            rd.get("severity", "low") or "low", top3, card_id,
+        )
+        if os.path.exists(card_path):
+            with open(card_path, "rb") as f:
+                await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
+            os.unlink(card_path)
+    except Exception as ce:
+        log.warning(f"Card gen fail: {ce}")
 
     # result_type == "questions"
     qs=result
@@ -254,24 +287,30 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     elif hyps:
         diag_text += "\n\n🔬 Предварительный анализ:\n"
         for hp in hyps[:3]:
-            pct_val = float(hp.get('probability', 0))
-            pct = f"{pct_val:.0f}%"
+            pct_text = f"{pct(hp.get('probability', 0)):.0f}%"
             name = hp.get('diagnosis_ru', hp.get('diagnosis', '?'))
-            diag_text+=f"  {name} — {pct}\n"
+            diag_text+=f"  {name} — {pct_text}\n"
 
     if questions:
+        questions=questions[:1]
         q_text="\n\n"
-        q=questions[0]
-        q_text+=f"{q.get('question','')}"
+        q_text+="Один короткий вопрос, чтобы собрать точнее день 1:\n"
+        for i,q in enumerate(questions,1):
+            q_text+=f"\n{q.get('question','')}"
 
         u["state"]=S_QUESTIONS
+        u["pending_questions"]=questions
     else:
         q_text=""
         u["state"]=S_ACTIVE
         if u["day"]==0: u["day"]=1;u["week"]=1
 
     sh(h)
-    msg=intro+diag_text+q_text
+    program_cta=(
+        "\n\n🎯 Дальше я соберу 28-дневную программу: утро, день, вечер и фокус дня."
+        "\nНачнем с простого первого шага."
+    )
+    msg=intro+diag_text+program_cta+q_text
     await send(upd.message,msg)
 
     # If no questions — proceed to final immediately
@@ -283,40 +322,20 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
         try: await st2.delete()
         except: pass
         await send(upd.message,reply)
-        # Generate + send share card
-        try:
-            from gen_card import generate_card
-            rd = u.get("reasoning_data", {}) or {}
-            hyps = rd.get("hypotheses", []) or []
-            top3 = [(h.get("diagnosis_ru", h.get("diagnosis", "?")), h.get("probability", 0)) for h in hyps[:3]]
-            card_path = await asyncio.to_thread(
-                generate_card,
-                rd.get("primary_diagnosis", "Анализ завершён") or "Анализ завершён",
-                f"{rd.get('confidence', 85)}%",
-                rd.get("severity", "low") or "low",
-                top3,
-                str(upd.effective_user.id),
-            )
-            if os.path.exists(card_path):
-                with open(card_path, "rb") as f:
-                    await upd.message.reply_photo(f, caption="🔬 SkinCoach — результат анализа")
-                os.unlink(card_path)
-        except Exception as ce:
-            log.warning(f"Card gen fail: {ce}")
-        # Share button after analysis
-        share_kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("👥 Поделиться с другом", url="https://t.me/share/url?url=https://t.me/kinesispro01_bot&text=%F0%9F%94%AC%20%D0%91%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9%20AI-%D0%B0%D0%BD%D0%B0%D0%BB%D0%B8%D0%B7%20%D0%BA%D0%BE%D0%B6%D0%B8%20%D0%BF%D0%BE%20%D1%84%D0%BE%D1%82%D0%BE")
-        ]])
-        await upd.message.reply_text("👆 Поделись результатом с другом!", reply_markup=share_kb)
+        await send_program_cta(upd.message)
 
 async def cmd_next(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     uid=upd.effective_user.id;h=lh();u=gu(h,uid)
+    if u["state"]==S_QUESTIONS:
+        await upd.message.reply_text("Сначала ответь на вопрос после анализа, потом я соберу день 1.")
+        return
     if u["state"]!=S_ACTIVE: await upd.message.reply_text("/start"); return
     await upd.message.chat.send_action(ChatAction.TYPING)
-    u["day"]+=1
-    if u["day"]>28:
+    if u["day"]>=28:
+        u["day"]=28
         await upd.message.reply_text(f"🎉 {u.get('name','')}, программа пройдена! Отправь фото для сравнения.")
         sh(h); return
+    u["day"]+=1
     u["week"]=((u["day"]-1)//7)+1
     wt=WEEKS.get(u["week"],"Программа");diw=((u["day"]-1)%7)+1
     df=FOCUSES.get(u["week"],{}).get(diw,"Следуй программе")

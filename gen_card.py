@@ -1,4 +1,4 @@
-"""Generate share card image — Chrome headless on desktop, PIL fallback on server."""
+﻿"""Generate share card image — Chrome headless on desktop, PIL fallback on server."""
 import subprocess, json, sys, os, tempfile, shutil, re, urllib.parse
 from pathlib import Path
 
@@ -221,7 +221,7 @@ def _gen_pil(diag_ru, confidence_pct, risk, top3, out_file):
     draw.text((c2x + 20, cy + 20), "УРОВЕНЬ РИСКА", fill=(255, 255, 255, 100),
               font=_font(11, bold=True))
 
-    risk_label = {"low": "Низкий", "medium": "Средний", "high": "Высокий — к врачу!"}
+    risk_label = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
     risk_colors = {"low": C_GREEN, "medium": C_YELLOW, "high": C_RED}
     rlbl = risk_label.get(risk, "Низкий")
     rcol = risk_colors.get(risk, C_GREEN)
@@ -274,7 +274,7 @@ def _gen_pil(diag_ru, confidence_pct, risk, top3, out_file):
     draw.rectangle([(M, fy), (W - M, fy + 1)], fill=(255, 255, 255, 20))
     fy += 16
 
-    draw.text((M, fy), "Попробовать бесплатно", fill=(255, 255, 255, 76), font=_font(12))
+    draw.text((M, fy), "Бесплатный AI-анализ кожи", fill=(255, 255, 255, 76), font=_font(12))
     draw.text((M, fy + 18), "@kinesispro01_bot", fill=C_ACCENT, font=_font(18, bold=True))
 
     # QR icon
@@ -302,12 +302,17 @@ def generate_card(diag_ru: str, confidence_pct: str, risk: str = "low",
     chrome = _find_chrome()
     if chrome:
         t3_json = json.dumps(top3, ensure_ascii=False)
-        params = f"?d={re.sub(r'[^а-яА-Яa-zA-Z0-9 ]', '', diag_ru).strip()}&c={confidence_pct.replace('%','')}&r={risk}&t={urllib.parse.quote(t3_json)}"
+        params = "?" + urllib.parse.urlencode({
+            "d": str(diag_ru).strip(),
+            "c": str(confidence_pct).replace("%", "").strip(),
+            "r": risk,
+            "t": t3_json,
+        })
         url = f"file:///{HTML_TPL.as_posix()}{params}"
         try:
             subprocess.run([
                 chrome, "--headless=new", f"--screenshot={out_file}",
-                "--window-size=800,700", "--hide-scrollbars", "--disable-gpu", url
+                "--window-size=800,900", "--hide-scrollbars", "--disable-gpu", url
             ], check=True, capture_output=True, timeout=15)
             return out_file
         except Exception:
