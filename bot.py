@@ -246,7 +246,17 @@ async def handle_photo(upd:Update,ctx:ContextTypes.DEFAULT_TYPE):
     except: pass
 
     if result_type=="ask_reshoot":
-        await upd.message.reply_text(f"📸 {result}")
+        hint=(result or "").strip()
+        msg=("Кажется, это не кожа 🤔\n\n"
+             "Мне нужно фото лица или проблемного участка кожи — тогда сделаю анализ и соберу программу.\n\n"
+             "Как снять:\n"
+             "• дневной свет, без фильтров\n"
+             "• лицо целиком или участок крупным планом\n"
+             "• кожа в фокусе\n\n"
+             "Жду фото 📸")
+        if hint and hint not in msg:
+            msg+=f"\n\nP.S. {hint}"
+        await upd.message.reply_text(msg)
         sh(h); return
 
     if result_type=="error":
