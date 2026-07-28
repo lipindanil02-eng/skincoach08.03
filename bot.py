@@ -3,7 +3,6 @@ SkinCoach v7 — 8-слойный пайплайн + уточняющие воп
 """
 import tempfile, os
 import asyncio,json,os,sys,base64,logging
-import httpx
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -27,7 +26,6 @@ TXT_FB=[m.strip() for m in os.getenv("TEXT_FALLBACKS","google/gemini-2.5-flash-p
 TEMP=float(os.getenv("TEMPERATURE","0.3"))
 TOUT=int(os.getenv("TIMEOUT","120"))
 PUBLIC_BOT_USERNAME=os.getenv("PUBLIC_BOT_USERNAME","kinesispro01_bot").strip().lstrip("@")
-SITE_URL=os.getenv("SITE_URL","https://skincoachweb.onrender.com").strip().rstrip("/")
 
 logging.basicConfig(level=logging.INFO,format="%(asctime)s|%(levelname)s|%(message)s")
 log=logging.getLogger("skincoach")
@@ -83,23 +81,6 @@ async def send_program_cta(msg):
         "📸 новое фото — повторный анализ",
         reply_markup=share_kb("Я прошел бесплатный AI-анализ кожи в SkinCoach")
     )
-
-# Keep-alive: будим сайт на Render, чтобы не засыпал
-async def _keepalive_loop():
-    await asyncio.sleep(30)
-    async with httpx.AsyncClient(timeout=30) as c:
-        while True:
-            try:
-                r1=await c.get(f"{SITE_URL}/")
-                r2=await c.get(f"{SITE_URL}/api/health")
-                log.info(f"keepalive: site={r1.status_code} api={r2.status_code}")
-            except Exception as e:
-                log.warning(f"keepalive: {e}")
-            await asyncio.sleep(600)
-
-async def _post_init(app):
-    if SITE_URL:
-        asyncio.create_task(_keepalive_loop())
 
 # Send
 async def send(msg,txt):
@@ -474,7 +455,7 @@ def main():
     if not TOKEN: raise RuntimeError("TELEGRAM_BOT_TOKEN not set")
     if not OR_KEY: raise RuntimeError("OPENROUTER_API_KEY not set")
     if sys.platform=="win32": asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    app=ApplicationBuilder().token(TOKEN).post_init(_post_init).build()
+    app=ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",cmd_start))
     app.add_handler(CommandHandler("help",cmd_help))
     app.add_handler(CommandHandler("next",cmd_next))
